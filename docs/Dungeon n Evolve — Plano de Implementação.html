@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dungeon n Evolve — Plano de Implementação</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3350;
+    --accent: #7c6af7;
+    --accent2: #4fc3f7;
+    --accent3: #69d886;
+    --warn: #f7a84c;
+    --text: #e2e4f0;
+    --muted: #8b90a8;
+    --danger: #f76c6c;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); line-height: 1.6; }
+
+  .hero {
+    background: linear-gradient(135deg, #1a0a3e 0%, #0f1a2e 50%, #0a1f0a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 48px 32px 36px;
+    text-align: center;
+  }
+  .hero h1 { font-size: 2.4rem; font-weight: 800; letter-spacing: -0.5px;
+    background: linear-gradient(90deg, #a78bfa, #60a5fa, #34d399);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .hero p { color: var(--muted); margin-top: 8px; font-size: 1rem; }
+  .hero .badges { display: flex; gap: 8px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
+  .badge { background: var(--surface2); border: 1px solid var(--border); border-radius: 20px;
+    padding: 4px 14px; font-size: 0.78rem; color: var(--muted); }
+  .badge.rust { border-color: #f76c6c44; color: #f7a06c; }
+  .badge.gpu { border-color: #7c6af744; color: #a78bfa; }
+  .badge.voxel { border-color: #4fc3f744; color: #4fc3f7; }
+
+  .container { max-width: 980px; margin: 0 auto; padding: 32px 24px; }
+
+  /* TOC */
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 24px; margin-bottom: 40px; }
+  .toc h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 12px; }
+  .toc ol { list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 24px; }
+  .toc li a { color: var(--muted); text-decoration: none; font-size: 0.9rem;
+    transition: color 0.15s; display: flex; align-items: center; gap: 6px; }
+  .toc li a:hover { color: var(--accent); }
+  .toc li a::before { content: "→"; color: var(--border); font-size: 0.75rem; }
+
+  /* Sections */
+  section { margin-bottom: 48px; }
+  section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 20px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px; }
+  section h2 .num { background: var(--accent); color: white; border-radius: 6px;
+    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; flex-shrink: 0; }
+  h3 { font-size: 1.05rem; color: var(--accent2); margin: 20px 0 10px; }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 14px; }
+  .card-title { font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .card p, .card ul { color: var(--muted); font-size: 0.9rem; }
+  .card ul { padding-left: 18px; }
+  .card ul li { margin-bottom: 3px; }
+
+  /* Grid */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media(max-width: 640px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } .toc ol { grid-template-columns: 1fr; } }
+
+  /* Phase timeline */
+  .phase { display: flex; gap: 16px; margin-bottom: 20px; }
+  .phase-num { background: var(--surface2); border: 2px solid var(--accent); border-radius: 50%;
+    width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+    font-weight: 800; color: var(--accent); flex-shrink: 0; font-size: 0.9rem; }
+  .phase-body { flex: 1; }
+  .phase-body h3 { margin: 0 0 4px; color: var(--text); font-size: 1rem; }
+  .phase-body .duration { font-size: 0.78rem; color: var(--warn); margin-bottom: 8px; }
+  .phase-body ul { color: var(--muted); font-size: 0.88rem; padding-left: 18px; }
+
+  /* Code block */
+  pre { background: #0a0d14; border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 18px; overflow-x: auto; font-size: 0.82rem; line-height: 1.55;
+    color: #c9d1d9; margin: 10px 0; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+  .kw { color: #ff7b72; }
+  .str { color: #a5d6ff; }
+  .cmt { color: #8b949e; }
+  .ty { color: #ffa657; }
+  .fn { color: #d2a8ff; }
+
+  /* Tags */
+  .tag { display: inline-block; border-radius: 4px; padding: 1px 7px; font-size: 0.75rem;
+    font-weight: 600; margin-left: 8px; vertical-align: middle; }
+  .tag.gpu { background: #7c6af722; color: #a78bfa; border: 1px solid #7c6af755; }
+  .tag.cpu { background: #4fc3f722; color: #4fc3f7; border: 1px solid #4fc3f755; }
+  .tag.critical { background: #f76c6c22; color: #f76c6c; border: 1px solid #f76c6c55; }
+  .tag.perf { background: #69d88622; color: #69d886; border: 1px solid #69d88655; }
+
+  /* Biomes grid */
+  .biome { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; }
+  .biome-icon { font-size: 1.5rem; margin-bottom: 6px; }
+  .biome h4 { font-size: 0.95rem; margin-bottom: 4px; }
+  .biome p { font-size: 0.82rem; color: var(--muted); }
+  .biome ul { font-size: 0.8rem; color: var(--muted); padding-left: 14px; margin-top: 4px; }
+
+  /* Arch diagram */
+  .arch { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin: 16px 0; }
+  .arch-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; text-align: center; font-size: 0.8rem; }
+  .arch-box .label { color: var(--muted); font-size: 0.7rem; margin-bottom: 2px; }
+  .arch-box.highlight { border-color: var(--accent); background: #7c6af711; }
+  .arch-box.highlight2 { border-color: var(--accent2); background: #4fc3f711; }
+  .arch-sep { grid-column: 1 / -1; border-top: 1px dashed var(--border); margin: 6px 0;
+    display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.75rem; }
+
+  /* Decisions */
+  .decision { background: var(--surface); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0;
+    padding: 12px 16px; margin-bottom: 12px; }
+  .decision h4 { font-size: 0.95rem; margin-bottom: 4px; }
+  .decision p { font-size: 0.87rem; color: var(--muted); }
+  .decision .why { font-size: 0.8rem; color: var(--accent); margin-top: 4px; }
+
+  /* Note */
+  .note { background: #4fc3f70d; border: 1px solid #4fc3f733; border-radius: 8px;
+    padding: 12px 16px; font-size: 0.88rem; color: #93d5f5; margin: 12px 0; }
+
+  /* Checklist */
+  .check { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0;
+    border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+  .check:last-child { border-bottom: none; }
+  .check .box { width: 16px; height: 16px; border: 2px solid var(--border); border-radius: 3px;
+    flex-shrink: 0; margin-top: 2px; }
+
+  footer { text-align: center; padding: 32px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 0.82rem; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>⚔️ Dungeon n Evolve</h1>
+  <p>Plano de Implementação — Fase 1 · Jogo Voxel Medieval em Rust</p>
+  <div class="badges">
+    <span class="badge rust">🦀 Rust</span>
+    <span class="badge gpu">GPU Compute (WGSL)</span>
+    <span class="badge voxel">Voxel 3D</span>
+    <span class="badge">wgpu · winit · egui</span>
+    <span class="badge">Geração Procedural</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <nav class="toc">
+    <h2>Índice</h2>
+    <ol>
+      <li><a href="#stack">Stack Tecnológico</a></li>
+      <li><a href="#arch">Arquitetura</a></li>
+      <li><a href="#estrutura">Estrutura do Projeto</a></li>
+      <li><a href="#fases">Fases de Implementação</a></li>
+      <li><a href="#geracao">Geração de Mundo (GPU)</a></li>
+      <li><a href="#biomas">6 Biomas</a></li>
+      <li><a href="#chunks">Sistema de Chunks</a></li>
+      <li><a href="#player">Player & Modos</a></li>
+      <li><a href="#ui">UI & Menus</a></li>
+      <li><a href="#decisoes">Decisões Arquiteturais</a></li>
+    </ol>
+  </nav>
+
+  <!-- STACK -->
+  <section id="stack">
+    <h2><span class="num">1</span> Stack Tecnológico</h2>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">🎮 Renderização & Janela</div>
+        <ul>
+          <li><strong>wgpu</strong> — API gráfica cross-platform (WebGPU), renderização 3D e compute shaders</li>
+          <li><strong>winit</strong> — janela, eventos de input e loop de eventos</li>
+          <li><strong>bytemuck</strong> — casting seguro para buffers GPU (vértices, uniforms)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">🧮 Matemática & Ruído</div>
+        <ul>
+          <li><strong>glam</strong> — vetores e matrizes otimizados (Vec3, Mat4)</li>
+          <li><strong>noise</strong> — Simplex/Perlin noise na CPU (seed, oitavas, persistência)</li>
+          <li>Shaders WGSL customizados para noise na GPU</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">🖥️ Interface (UI)</div>
+        <ul>
+          <li><strong>egui</strong> — UI imediata (menus, pausa, configurações)</li>
+          <li><strong>egui-wgpu</strong> — integração egui com pipeline wgpu</li>
+          <li>Tela inicial, menu de pausa, criação de mundo</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">⚙️ Sistemas & Dados</div>
+        <ul>
+          <li><strong>rayon</strong> — paralelismo CPU (geração de mesh, chunks)</li>
+          <li><strong>serde + bincode</strong> — serialização de chunks e saves</li>
+          <li><strong>log + env_logger</strong> — logging estruturado</li>
+          <li><strong>anyhow</strong> — tratamento de erros ergonômico</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note">
+      💡 <strong>Por que wgpu?</strong> wgpu é a escolha natural em Rust — suporta Vulkan, Metal, DX12 e WebGPU na mesma API, tem compute shaders (essencial para geração na GPU) e é a crate mais madura para gráficos em Rust.
+    </div>
+  </section>
+
+  <!-- ARQUITETURA -->
+  <section id="arch">
+    <h2><span class="num">2</span> Arquitetura Geral</h2>
+
+    <div class="arch">
+      <div class="arch-box"><div class="label">Entrada</div>winit Events</div>
+      <div class="arch-box highlight"><div class="label">Game Loop</div>App / State</div>
+      <div class="arch-box"><div class="label">UI</div>egui</div>
+      <div class="arch-box"><div class="label">Save</div>serde/bincode</div>
+
+      <div class="arch-sep">▼ Core Systems</div>
+
+      <div class="arch-box"><div class="label">Player</div>Controller + Modos</div>
+      <div class="arch-box"><div class="label">Camera</div>Perspectiva + FOV</div>
+      <div class="arch-box"><div class="label">Physics</div>AABB + Gravity</div>
+      <div class="arch-box"><div class="label">World</div>ChunkManager</div>
+
+      <div class="arch-sep">▼ GPU Pipeline</div>
+
+      <div class="arch-box highlight2"><div class="label">Compute</div>Heightmap Gen</div>
+      <div class="arch-box highlight2"><div class="label">Compute</div>Biome Gen</div>
+      <div class="arch-box highlight"><div class="label">Render</div>Voxel Pipeline</div>
+      <div class="arch-box highlight"><div class="label">Render</div>Water Pipeline</div>
+    </div>
+
+    <h3>Fluxo do Game Loop</h3>
+<pre><span class="cmt">// Ciclo principal a cada frame</span>
+<span class="kw">loop</span> {
+    <span class="cmt">// 1. Processar eventos (input, resize, fechar)</span>
+    event_loop.<span class="fn">handle_events</span>(&input);
+
+    <span class="cmt">// 2. Atualizar estado</span>
+    <span class="kw">if</span> !paused {
+        player.<span class="fn">update</span>(dt, &input);
+        physics.<span class="fn">step</span>(dt, &world);
+        chunk_manager.<span class="fn">update</span>(&player.position);  <span class="cmt">// carregar/descarregar chunks</span>
+        world_gen.<span class="fn">poll_gpu_results</span>();             <span class="cmt">// pegar chunks prontos da GPU</span>
+    }
+
+    <span class="cmt">// 3. Renderizar</span>
+    renderer.<span class="fn">render</span>(&world, &camera, &ui_state);
+}</pre>
+  </section>
+
+  <!-- ESTRUTURA -->
+  <section id="estrutura">
+    <h2><span class="num">3</span> Estrutura do Projeto</h2>
+<pre>Dungeon_n_Evolve/
+├── <span class="ty">Cargo.toml</span>
+├── <span class="ty">src/</span>
+│   ├── <span class="kw">main.rs</span>              <span class="cmt">// ponto de entrada, inicializa winit + wgpu</span>
+│   ├── <span class="kw">app.rs</span>               <span class="cmt">// GameState, loop principal, transições de estado</span>
+│   │
+│   ├── <span class="ty">renderer/</span>
+│   │   ├── context.rs        <span class="cmt">// WgpuContext: device, queue, surface</span>
+│   │   ├── pipeline.rs       <span class="cmt">// pipelines de render (voxel, água, skybox)</span>
+│   │   ├── mesh.rs           <span class="cmt">// ChunkMesh: greedy meshing → vértices/índices</span>
+│   │   ├── lod.rs            <span class="cmt">// Level of Detail por distância</span>
+│   │   └── water.rs          <span class="cmt">// shader de ondas do oceano</span>
+│   │
+│   ├── <span class="ty">world/</span>
+│   │   ├── block.rs          <span class="cmt">// BlockType enum, propriedades</span>
+│   │   ├── palette.rs        <span class="cmt">// ColorPalette — cores centralizadas</span>
+│   │   ├── chunk.rs          <span class="cmt">// Chunk 32×32×256, estado (dirty, loaded)</span>
+│   │   ├── chunk_manager.rs  <span class="cmt">// carga/descarga, fila de geração</span>
+│   │   └── gen/
+│   │       ├── gpu_gen.rs    <span class="cmt">// compute shaders → heightmap/bioma</span>
+│   │       ├── biome.rs      <span class="cmt">// Biome enum, Voronoi + temperatura/umidade</span>
+│   │       ├── tree.rs       <span class="cmt">// árvores cross-chunk via seed determinístico</span>
+│   │       └── features.rs   <span class="cmt">// ravinas, cavernas, minérios</span>
+│   │
+│   ├── <span class="ty">player/</span>
+│   │   ├── controller.rs     <span class="cmt">// movimento, olhar, raycasting</span>
+│   │   └── modes.rs          <span class="cmt">// Survival | Creative | Spectator</span>
+│   │
+│   ├── <span class="ty">ui/</span>
+│   │   ├── main_menu.rs      <span class="cmt">// tela inicial</span>
+│   │   ├── world_select.rs   <span class="cmt">// criar/selecionar mundos</span>
+│   │   ├── pause_menu.rs     <span class="cmt">// ESC → pausa</span>
+│   │   └── settings.rs       <span class="cmt">// gráficos, threads, LOD</span>
+│   │
+│   ├── <span class="ty">camera/</span>
+│   │   └── mod.rs            <span class="cmt">// Camera, view/proj matrix, frustum</span>
+│   │
+│   ├── <span class="ty">physics/</span>
+│   │   └── mod.rs            <span class="cmt">// AABB collision, gravity, pulo</span>
+│   │
+│   └── <span class="ty">save/</span>
+│       └── mod.rs            <span class="cmt">// serialização de mundo para disco</span>
+│
+└── <span class="ty">assets/shaders/</span>
+    ├── voxel.wgsl            <span class="cmt">// vertex + fragment do mundo voxel</span>
+    ├── water.wgsl            <span class="cmt">// ondas do oceano com tempo</span>
+    └── compute/
+        ├── heightmap.wgsl    <span class="cmt">// Simplex noise → altura</span>
+        └── biome.wgsl        <span class="cmt">// Voronoi + temp/umidade → bioma</span></pre>
+  </section>
+
+  <!-- FASES -->
+  <section id="fases">
+    <h2><span class="num">4</span> Fases de Implementação</h2>
+
+    <div class="phase">
+      <div class="phase-num">1</div>
+      <div class="phase-body">
+        <h3>Fundação</h3>
+        <div class="duration">📅 ~2 semanas</div>
+        <ul>
+          <li>Criar <code>Cargo.toml</code> com todas as dependências</li>
+          <li>Inicializar janela com <code>winit</code> e contexto <code>wgpu</code></li>
+          <li>Pipeline de render básico (clear color, triângulo)</li>
+          <li>Sistema de input (teclado + mouse)</li>
+          <li>Camera perspectiva com view/projection matrix</li>
+          <li>Game loop com <code>delta_time</code></li>
+          <li>Integração egui para UI básica</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">2</div>
+      <div class="phase-body">
+        <h3>Sistema de Voxels e Rendering</h3>
+        <div class="duration">📅 ~3 semanas</div>
+        <ul>
+          <li>Enum <code>BlockType</code> e <code>ColorPalette</code> (struct com todas as cores)</li>
+          <li>Estrutura <code>Chunk</code> (32×32×256 blocos)</li>
+          <li><strong>Greedy meshing</strong> — agrupa faces em quads, muito mais eficiente que naive</li>
+          <li>Upload de mesh para GPU (vertex + index buffer)</li>
+          <li>Iluminação básica (normal-based diffuse)</li>
+          <li>Frustum culling (não renderiza chunks fora da câmera)</li>
+          <li><code>ChunkManager</code> — ring buffer de chunks ao redor do player</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">3</div>
+      <div class="phase-body">
+        <h3>Geração Procedural na GPU <span class="tag gpu">GPU</span></h3>
+        <div class="duration">📅 ~3-4 semanas · Núcleo do projeto</div>
+        <ul>
+          <li>Compute shader WGSL: Simplex noise multi-oitava → heightmap</li>
+          <li>Ridge noise para montanhas + worm caves para ravinas</li>
+          <li>Compute shader WGSL: temperatura + umidade → Voronoi → bioma</li>
+          <li>Pipeline GPU → readback buffer → populate chunk na CPU</li>
+          <li>Suavização de fronteiras entre chunks (bordas compartilhadas)</li>
+          <li>Geração de minérios por bioma (threshold + noise 3D)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">4</div>
+      <div class="phase-body">
+        <h3>Biomas e Features</h3>
+        <div class="duration">📅 ~2-3 semanas</div>
+        <ul>
+          <li>6 biomas com blending suave nas bordas</li>
+          <li>Árvores cross-chunk (seed determinístico por posição)</li>
+          <li>Flores, arbustos, cactos, coqueiros, palmeiras</li>
+          <li>Moinhos e casas simples de NPC (estruturas pre-definidas)</li>
+          <li>NPCs placeholder (pescadores, moradores de planície)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">5</div>
+      <div class="phase-body">
+        <h3>Player & Física</h3>
+        <div class="duration">📅 ~2 semanas</div>
+        <ul>
+          <li>3 modos de controle (Sobrevivência, Criativo, Espectador)</li>
+          <li>AABB collision detection contra blocos</li>
+          <li>Gravidade + pulo (modo Sobrevivência)</li>
+          <li>Raycasting para seleção e quebra de blocos</li>
+          <li>Voo livre (modo Criativo e Espectador)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">6</div>
+      <div class="phase-body">
+        <h3>UI Completa (menus)</h3>
+        <div class="duration">📅 ~2 semanas</div>
+        <ul>
+          <li>Tela inicial: Iniciar Jogo, Configurações, Sair</li>
+          <li>Tela de criação/seleção de mundo (seed, nome)</li>
+          <li>Menu de pausa (ESC) com todas as opções</li>
+          <li>Settings: chunks visíveis, LOD, threads, partículas, controles</li>
+          <li>Troca de modo de controle em runtime</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">7</div>
+      <div class="phase-body">
+        <h3>Save & Load</h3>
+        <div class="duration">📅 ~1-2 semanas</div>
+        <ul>
+          <li>Salvar apenas chunks modificados (delta do gerado proceduralmente)</li>
+          <li>Serializar com <code>bincode</code> → arquivo <code>.dne</code> por mundo</li>
+          <li>Listar mundos salvos na tela de seleção</li>
+          <li>Auto-save periódico configurável</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">8</div>
+      <div class="phase-body">
+        <h3>Oceano, Água & Peixes</h3>
+        <div class="duration">📅 ~1-2 semanas</div>
+        <ul>
+          <li>Shader de água com ondas (seno + tempo como uniform)</li>
+          <li>Transparência e cor escura abaixo da superfície</li>
+          <li>Peixes 2D (pixel art em billboards 3D) com schooling behavior simples</li>
+          <li>Barcos de pescadores de rede (objetos estáticos com animação de balanço)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">9</div>
+      <div class="phase-body">
+        <h3>Performance, LOD & Polimento <span class="tag perf">PERF</span></h3>
+        <div class="duration">📅 ~2 semanas</div>
+        <ul>
+          <li>LOD: chunks distantes usam mesh simplificado (menos quads)</li>
+          <li>Thread pool balanceado CPU/GPU para geração de chunks</li>
+          <li>Sistema de partículas simples e reduzível por settings</li>
+          <li>Skybox com gradiente dia/noite (futuro)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">10</div>
+      <div class="phase-body">
+        <h3>Testes <span class="tag critical">CRÍTICO</span></h3>
+        <div class="duration">📅 Contínuo ao longo do projeto</div>
+        <ul>
+          <li>Unit tests: geração de noise, bioma por coordenada, greedy mesh</li>
+          <li>Integration tests: chunk load/unload, save/load round-trip</li>
+          <li>Benchmarks: tempo de geração de chunk (meta: &lt;16ms por chunk)</li>
+          <li>Testes de continuidade: sem gaps nas fronteiras de chunk</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- GERAÇÃO GPU -->
+  <section id="geracao">
+    <h2><span class="num">5</span> Geração de Mundo na GPU</h2>
+
+    <h3>Pipeline de Geração por Chunk</h3>
+<pre><span class="cmt">// Fluxo GPU para cada chunk novo</span>
+<span class="cmt">// 1. Dispatch compute shader com posição do chunk como uniform</span>
+<span class="ty">ComputePass</span>::<span class="fn">dispatch</span>(heightmap_shader, chunk_x, chunk_z);
+<span class="ty">ComputePass</span>::<span class="fn">dispatch</span>(biome_shader, chunk_x, chunk_z);
+
+<span class="cmt">// 2. Resultados vão para storage buffer na GPU</span>
+<span class="cmt">// 3. Readback assíncrono (não bloqueia o render thread)</span>
+queue.<span class="fn">submit</span>([encoder.<span class="fn">finish</span>()]);
+buffer_slice.<span class="fn">map_async</span>(MapMode::Read, callback);
+
+<span class="cmt">// 4. Callback popula o Chunk com blocos</span>
+<span class="kw">for</span> x <span class="kw">in</span> 0..32 {
+    <span class="kw">for</span> z <span class="kw">in</span> 0..32 {
+        <span class="kw">let</span> height = heightmap[x][z];  <span class="cmt">// vem da GPU</span>
+        <span class="kw">let</span> biome  = biome_map[x][z];   <span class="cmt">// vem da GPU</span>
+        chunk.<span class="fn">populate_column</span>(x, z, height, biome);
+    }
+}</pre>
+
+    <h3>Shader de Heightmap (WGSL)</h3>
+<pre><span class="cmt">// assets/shaders/compute/heightmap.wgsl</span>
+<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;<span class="ty">storage</span>, <span class="ty">read_write</span>&gt; heightmap: array&lt;<span class="ty">f32</span>&gt;;
+<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;<span class="ty">uniform</span>&gt; params: ChunkParams;
+
+<span class="kw">@compute @workgroup_size</span>(8, 8, 1)
+<span class="kw">fn</span> <span class="fn">main</span>(@builtin(global_invocation_id) gid: vec3&lt;<span class="ty">u32</span>&gt;) {
+    <span class="kw">let</span> world_x = <span class="ty">f32</span>(gid.x + params.chunk_x * 32u);
+    <span class="kw">let</span> world_z = <span class="ty">f32</span>(gid.y + params.chunk_z * 32u);
+
+    <span class="cmt">// Noise multi-oitava: continente + detalhe + montanhas</span>
+    <span class="kw">var</span> h = simplex(world_x * 0.003, world_z * 0.003) * 80.0;  <span class="cmt">// base</span>
+    h += simplex(world_x * 0.01,  world_z * 0.01)  * 25.0;  <span class="cmt">// colinas</span>
+    h += simplex(world_x * 0.05,  world_z * 0.05)  * 8.0;   <span class="cmt">// detalhe</span>
+    h += ridge_noise(world_x * 0.008, world_z * 0.008) * 60.0; <span class="cmt">// montanhas</span>
+
+    heightmap[gid.y * 32u + gid.x] = clamp(h + 64.0, 1.0, 255.0);
+}</pre>
+
+    <h3>Árvores Cross-Chunk</h3>
+    <div class="card">
+      <div class="card-title">🌲 Estratégia Determinística</div>
+      <p>Cada árvore tem uma posição calculada a partir do seed do mundo + coordenadas do chunk. Ao gerar o mesh de qualquer chunk, ele consulta os chunks vizinhos (via um "lookahead" de ±2 chunks) para incluir troncos e galhos que se estendem para além das bordas.</p>
+      <ul style="margin-top: 8px;">
+        <li>Função: <code>tree_positions_in_chunk(world_seed, chunk_x, chunk_z) → Vec&lt;(i32,i32)&gt;</code></li>
+        <li>Sempre gera os mesmos pontos para o mesmo chunk</li>
+        <li>O mesh do chunk inclui blocos de árvores de chunks vizinhos se eles estiverem dentro dos bounds</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- BIOMAS -->
+  <section id="biomas">
+    <h2><span class="num">6</span> Os 6 Biomas</h2>
+    <div class="grid-3" style="margin-bottom: 16px;">
+      <div class="biome">
+        <div class="biome-icon">🌾</div>
+        <h4>Planícies</h4>
+        <p>Terreno plano e suave. Alta umidade, temperatura média.</p>
+        <ul>
+          <li>Flores coloridas, plantações</li>
+          <li>Moinhos e casas de NPC</li>
+          <li>Grama verde clara</li>
+          <li>Altura: ~65–75 blocos</li>
+        </ul>
+      </div>
+      <div class="biome">
+        <div class="biome-icon">🌲</div>
+        <h4>Floresta</h4>
+        <p>Cobertura densa. Frio, alta umidade.</p>
+        <ul>
+          <li>Pinheiros altos e densos</li>
+          <li>Arbustos, bagas vermelhas e azuis</li>
+          <li>Solo escuro, musgo</li>
+          <li>Altura: ~70–90 blocos</li>
+        </ul>
+      </div>
+      <div class="biome">
+        <div class="biome-icon">⛰️</div>
+        <h4>Montanhas</h4>
+        <p>Ridge noise acentuado. Frio, baixa umidade.</p>
+        <ul>
+          <li>Carvão, feldspato, magnetita</li>
+          <li>Pirita, bauxita, ouro raro</li>
+          <li>Picos com neve</li>
+          <li>Altura: ~100–200 blocos</li>
+        </ul>
+      </div>
+      <div class="biome">
+        <div class="biome-icon">🏖️</div>
+        <h4>Praia</h4>
+        <p>Transição oceano-terra. Quente, muito alta umidade.</p>
+        <ul>
+          <li>Areia fina, coqueiros, palmeiras</li>
+          <li>Caranguejos e pescadores NPC</li>
+          <li>Casas de pescador</li>
+          <li>Altura: ~63–68 blocos</li>
+        </ul>
+      </div>
+      <div class="biome">
+        <div class="biome-icon">🏜️</div>
+        <h4>Deserto</h4>
+        <p>Dunas onduladas. Muito quente, umidade mínima.</p>
+        <ul>
+          <li>Dunas via noise de baixa freq.</li>
+          <li>Cactos (raramente com fruta)</li>
+          <li>Oásis muito raro</li>
+          <li>Altura: ~65–95 blocos</li>
+        </ul>
+      </div>
+      <div class="biome">
+        <div class="biome-icon">🌊</div>
+        <h4>Oceano</h4>
+        <p>Nível d'água ~63. Temperatura média, umidade máxima.</p>
+        <ul>
+          <li>Ondas via shader de tempo</li>
+          <li>Peixes 2D pixel art em 3D</li>
+          <li>Barcos de pescadores de rede</li>
+          <li>Visibilidade reduzida abaixo da água</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🗺️ Biome Blending via Temperatura × Umidade</div>
+      <p>Um ponto no espaço tem dois valores noise: <strong>temperatura</strong> (−1 a 1) e <strong>umidade</strong> (−1 a 1). O bioma resulta do quadrante no mapa 2D. Voronoi adiciona "centros" de bioma com bordas suaves (distância ponderada entre os 2 biomas mais próximos para blend de blocos nas fronteiras).</p>
+    </div>
+  </section>
+
+  <!-- CHUNKS -->
+  <section id="chunks">
+    <h2><span class="num">7</span> Sistema de Chunks</h2>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">📦 Dimensões do Chunk</div>
+        <ul>
+          <li><strong>Tamanho: 32×32×256</strong> blocos por chunk</li>
+          <li>32 escolhido (vs 16) para melhor utilização do workgroup 8×8 da GPU</li>
+          <li>Altura 256: permite montanhas altas e ravinas profundas</li>
+          <li>Nível do mar: Y = 63</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">🔄 Estados de um Chunk</div>
+        <ul>
+          <li><code>Unloaded</code> — fora do alcance</li>
+          <li><code>Queued</code> — aguardando geração na GPU</li>
+          <li><code>Generated</code> — dados de bloco prontos</li>
+          <li><code>Meshed</code> — mesh GPU pronta para render</li>
+          <li><code>Dirty</code> — bloco modificado, precisa remesh</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">🎚️ LOD por Distância</div>
+        <ul>
+          <li><strong>0–8 chunks:</strong> full resolution, greedy mesh completo</li>
+          <li><strong>8–16 chunks:</strong> merge de blocos similares em colunas</li>
+          <li><strong>16+ chunks:</strong> mesh ultralight (apenas topo das colunas)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">⚡ ColorPalette (struct central)</div>
+<pre style="margin:0; font-size: 0.78rem;"><span class="kw">pub struct</span> <span class="ty">ColorPalette</span> {
+  <span class="kw">pub</span> grass_plains: [<span class="ty">u8</span>;4],
+  <span class="kw">pub</span> grass_forest: [<span class="ty">u8</span>;4],
+  <span class="kw">pub</span> sand:          [<span class="ty">u8</span>;4],
+  <span class="kw">pub</span> stone:         [<span class="ty">u8</span>;4],
+  <span class="kw">pub</span> water:         [<span class="ty">u8</span>;4],
+  <span class="cmt">// ... todos os blocos aqui</span>
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLAYER -->
+  <section id="player">
+    <h2><span class="num">8</span> Player & Modos de Controle</h2>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-title">⚔️ Sobrevivência</div>
+        <ul>
+          <li>Anda no chão com física</li>
+          <li>Pulo de ~1 metro (2 blocos)</li>
+          <li>Colisão AABB com blocos</li>
+          <li>Gravidade constante</li>
+          <li>Não pode quebrar blocos livremente (futuro: ferramentas)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">🏗️ Criativo</div>
+        <ul>
+          <li>Voo livre em qualquer direção</li>
+          <li>Pode andar no chão normalmente</li>
+          <li>Pulo disponível</li>
+          <li>Quebra qualquer bloco instantaneamente</li>
+          <li>Sem gravidade quando voando</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">👁️ Espectador</div>
+        <ul>
+          <li>Atravessa todos os blocos</li>
+          <li>Voo livre apenas (sem andar)</li>
+          <li>Sem interação com o mundo</li>
+          <li>Invisível para outros players</li>
+          <li>Ideal para exploração e debug</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Raycasting para Interação</h3>
+<pre><span class="cmt">// DDA algorithm — percorre blocos ao longo do olhar do player</span>
+<span class="kw">fn</span> <span class="fn">raycast</span>(origin: Vec3, dir: Vec3, max_dist: <span class="ty">f32</span>, world: &World)
+    -> Option&lt;(BlockPos, Face)&gt;
+{
+    <span class="cmt">// Step por step, sem raiz quadrada — O(distância)</span>
+    <span class="cmt">// Retorna posição do bloco e face atingida</span>
+}</pre>
+  </section>
+
+  <!-- UI -->
+  <section id="ui">
+    <h2><span class="num">9</span> UI & Menus (egui)</h2>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">🏠 Tela Inicial</div>
+        <ul>
+          <li>Logo do jogo centralizado</li>
+          <li><strong>Iniciar Jogo</strong> → tela de criação/seleção de mundo</li>
+          <li><strong>Configurações</strong> → settings globais</li>
+          <li><strong>Sair</strong> → fecha o processo</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">🌍 Criação de Mundo</div>
+        <ul>
+          <li>Campo de nome do mundo</li>
+          <li>Campo de seed (numérico ou texto)</li>
+          <li>Lista de mundos existentes (ler pasta de saves)</li>
+          <li>Botão Criar / Carregar / Deletar</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">⏸️ Menu de Pausa (ESC)</div>
+        <ul>
+          <li>Pausa todas as simulações imediatamente</li>
+          <li>Despausar (ESC ou botão)</li>
+          <li>Salvar mundo e sair</li>
+          <li>Sair sem salvar</li>
+          <li>Configurações rápidas de gráficos</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">⚙️ Configurações de Gráficos</div>
+        <ul>
+          <li>Slider: chunks visíveis (4–24)</li>
+          <li>Toggle: redução de partículas</li>
+          <li>Dropdown: nível de LOD</li>
+          <li>Slider: threads CPU para geração</li>
+          <li>Slider: balanceamento CPU/GPU</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- DECISÕES -->
+  <section id="decisoes">
+    <h2><span class="num">10</span> Decisões Arquiteturais Chave</h2>
+
+    <div class="decision">
+      <h4>Greedy Meshing em vez de Naive Meshing</h4>
+      <p>Naive cria um quad por face visível de bloco — até 6×N quads. Greedy agrupa faces adjacentes do mesmo tipo em retângulos maiores, reduzindo vértices em ~80–95% em áreas uniformes.</p>
+      <div class="why">→ Essencial para performance com 32³ × 256 blocos por chunk</div>
+    </div>
+
+    <div class="decision">
+      <h4>Voronoi para Biomas: Vale a pena?</h4>
+      <p>Sim. Voronoi cria regiões orgânicas de bioma (como "células"), evitando as transições em faixas horizontais do noise puro. Combinado com suavização de distância entre os 2 biomas mais próximos, resulta em fronteiras naturais sem serem bruscas.</p>
+      <div class="why">→ Implementar com GPU Voronoi no shader de bioma</div>
+    </div>
+
+    <div class="decision">
+      <h4>Montanhas contínuas entre chunks</h4>
+      <p>O shader de heightmap usa coordenadas de mundo globais (não locais ao chunk). Logo, o mesmo ponto no espaço sempre gera a mesma altura, independente de qual chunk é gerado primeiro. Sem gaps ou descontinuidades nas bordas.</p>
+      <div class="why">→ Arquitetura stateless do compute shader garante isso automaticamente</div>
+    </div>
+
+    <div class="decision">
+      <h4>Peixes 2D (pixel art) em 3D</h4>
+      <p>Billboard rendering: o quad dos peixes sempre aponta para a câmera (via vertex shader com rotation). A textura pixel art é uma spritesheet com frames de animação de natação. School behavior simples com steering separation + alignment.</p>
+      <div class="why">→ Leve, visual charmoso e consistente com a estética voxel</div>
+    </div>
+
+    <div class="decision">
+      <h4>Save apenas de deltas (chunks modificados)</h4>
+      <p>O mundo procedural é reproduzível a partir do seed. Salvar todo o mapa seria gigantesco. Apenas os chunks com blocos diferentes do gerado são salvos em disco. No load, gera proceduralmente e aplica o delta por cima.</p>
+      <div class="why">→ Saves compactos, comparáveis aos de Minecraft</div>
+    </div>
+
+    <div class="decision">
+      <h4>Pirita + Água = Ácido Sulfúrico</h4>
+      <p>No bioma de montanhas, blocos de pirita adjacentes à água (chuva ou rios) disparam uma reação: geram ácido sulfúrico (bloco corrosivo) e dióxido de enxofre (partícula de fumaça). Sistema reativo simples com verificação de vizinhos.</p>
+      <div class="why">→ Implementar na Fase 4 como mecânica de ambiente</div>
+    </div>
+  </section>
+
+  <!-- TESTES -->
+  <section>
+    <h2><span class="num">✓</span> Checklist de Funcionalidades (Fase 1)</h2>
+    <div class="card">
+      <div class="check"><div class="box"></div>Janela 3D inicializa com wgpu</div>
+      <div class="check"><div class="box"></div>Camera perspectiva com movimento de mouse</div>
+      <div class="check"><div class="box"></div>Chunks renderizando com greedy mesh</div>
+      <div class="check"><div class="box"></div>Heightmap gerado na GPU (compute shader)</div>
+      <div class="check"><div class="box"></div>6 biomas gerados com blending suave</div>
+      <div class="check"><div class="box"></div>Árvores não têm gaps em fronteiras de chunk</div>
+      <div class="check"><div class="box"></div>Montanhas contínuas sem seam entre chunks</div>
+      <div class="check"><div class="box"></div>3 modos de controle funcionando</div>
+      <div class="check"><div class="box"></div>Menu de pausa (ESC) pausa tudo</div>
+      <div class="check"><div class="box"></div>Tela inicial com 3 botões</div>
+      <div class="check"><div class="box"></div>Criação e seleção de mundos funcionando</div>
+      <div class="check"><div class="box"></div>Save/load de mundo em arquivo</div>
+      <div class="check"><div class="box"></div>LOD: chunks distantes com mesh reduzido</div>
+      <div class="check"><div class="box"></div>Shader de ondas no oceano</div>
+      <div class="check"><div class="box"></div>Peixes 2D se movendo no oceano</div>
+      <div class="check"><div class="box"></div>Settings de gráficos funcionando em runtime</div>
+      <div class="check"><div class="box"></div>ColorPalette centralizado e fácil de editar</div>
+      <div class="check"><div class="box"></div>Testes unitários de geração passando</div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  Dungeon n Evolve · Fase 1 · Plano de Implementação · 2026
+</footer>
+
+</body>
+</html>

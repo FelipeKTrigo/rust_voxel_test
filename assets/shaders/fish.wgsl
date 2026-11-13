@@ -55,6 +55,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     let hue = mix(vec3<f32>(1.0, 0.55, 0.25), vec3<f32>(0.5, 0.75, 1.0), in.tint);
-    let rgb = texel.rgb * hue;
+    let rgb = texel.rgb * hue * (0.30 + 0.70 * daylight());
     return vec4<f32>(apply_fog(rgb, in.world_pos), 1.0);
 }

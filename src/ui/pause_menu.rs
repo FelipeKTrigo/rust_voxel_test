@@ -1,4 +1,4 @@
-use super::settings::{settings_panel, GraphicsSettings};
+use super::settings::GraphicsSettings;
 use super::{big_button, PlayerModeUi};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,6 +7,8 @@ pub enum PauseAction {
     SaveAndQuit,
     QuitWithoutSaving,
     SetMode(PlayerModeUi),
+    /// Abre a tela de gráficos (separada, centralizada).
+    OpenGraphics,
 }
 
 #[derive(Default, Debug)]
@@ -17,7 +19,7 @@ pub struct PauseState {
 pub fn pause_menu_screen(
     ctx: &egui::Context,
     current_mode: PlayerModeUi,
-    settings: &mut GraphicsSettings,
+    _settings: &mut GraphicsSettings,
     state: &mut PauseState,
 ) -> Option<PauseAction> {
     let mut action = None;
@@ -45,11 +47,9 @@ pub fn pause_menu_screen(
                         }
                     });
                     ui.add_space(12.0);
-                    egui::CollapsingHeader::new("Gráficos")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            settings_panel(ui, settings);
-                        });
+                    if big_button(ui, "Gráficos") {
+                        action = Some(PauseAction::OpenGraphics);
+                    }
                     ui.add_space(16.0);
                     if big_button(ui, "Salvar mundo e sair") {
                         action = Some(PauseAction::SaveAndQuit);

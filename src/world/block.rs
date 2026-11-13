@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum BlockType {
     #[default]
@@ -54,7 +54,8 @@ impl BlockType {
     }
 
     pub fn is_transparent(&self) -> bool {
-        matches!(self, BlockType::Air | BlockType::Water | BlockType::Leaves | BlockType::PineLeaves | BlockType::PalmLeaves)
+        // Folhas agora são opacas: só ar e água deixam ver o que há atrás.
+        matches!(self, BlockType::Air | BlockType::Water)
     }
 
     pub fn is_air(&self) -> bool {
@@ -65,6 +66,15 @@ impl BlockType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_air_and_water_let_you_see_through() {
+        // Parte 2: folhas deixavam ver através de árvores e chunks; agora só ar e água são transparentes.
+        for v in 0u8..32 {
+            let b = BlockType::from_u8(v);
+            assert_eq!(b.is_transparent(), matches!(b, BlockType::Air | BlockType::Water), "{b:?}");
+        }
+    }
 
     #[test]
     fn u8_roundtrip_all_blocks() {

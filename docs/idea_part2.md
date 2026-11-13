@@ -27,3 +27,4 @@ essa parte do desenvolvimento serve para polir os graficos e funcionalidades, va
     - devem ser por padrão 5 slots
     - intes pegos do chão devem ir primeiro para a hot bar se não houver do mesmo no inventario, se houver os mesmos devem ir para o inventario
 - quero que arrume a iu de grafico, preciso que a reestilize para que fique centralizada e em uma configuração de tela separada, pois hoje a mesma não combina com o resto das interfaces
+- quero que realizem um sistema de entity culling, ocultação de entidade que não são visiveis ao player ou estão escondidas.

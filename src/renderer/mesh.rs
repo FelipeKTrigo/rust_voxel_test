@@ -2,6 +2,7 @@ use crate::world::block::BlockType;
 use crate::world::chunk::{Chunk, CHUNK_SIZE, CHUNK_HEIGHT};
 use crate::world::palette::ColorPalette;
 use crate::renderer::lod::Lod;
+use crate::world::textures::{layer_for_face, NO_TEXTURE};
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -9,14 +10,25 @@ pub struct VoxelVertex {
     pub position: [f32; 3],
     pub color: [f32; 4],
     pub normal: [f32; 3],
+    /// Coordenada de textura em unidades de bloco (quads fundidos repetem o tile).
+    pub uv: [f32; 2],
+    /// Camada do array de texturas (`NO_TEXTURE` = usar `color`).
+    pub layer: u32,
 }
 
 impl VoxelVertex {
-    pub const ATTRIBS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+    pub const ATTRIBS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x4,
         2 => Float32x3,
+        3 => Float32x2,
+        4 => Uint32,
     ];
+
+    /// Vértice sem textura (cor chapada): barcos, partículas, LOD distante.
+    pub fn flat(position: [f32; 3], color: [f32; 4], normal: [f32; 3]) -> Self {
+        Self { position, color, normal, uv: [0.0, 0.0], layer: NO_TEXTURE }
+    }
 
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -30,7 +42,7 @@ impl VoxelVertex {
 // 6 faces: +X, -X, +Y, -Y, +Z, -Z
 // Each face: 4 vertices in CCW order (verified via cross-product)
 // (B-A) x (C-A) must equal outward normal
-const FACE_VERTICES: [[[i32; 3]; 4]; 6] = [
+pub(crate) const FACE_VERTICES: [[[i32; 3]; 4]; 6] = [
     [[1,0,0],[1,1,0],[1,1,1],[1,0,1]],  // +X  normal=(1,0,0)
     [[0,0,1],[0,1,1],[0,1,0],[0,0,0]],  // -X  normal=(-1,0,0)
     [[0,1,1],[1,1,1],[1,1,0],[0,1,0]],  // +Y  normal=(0,1,0)
@@ -39,7 +51,7 @@ const FACE_VERTICES: [[[i32; 3]; 4]; 6] = [
     [[1,0,0],[0,0,0],[0,1,0],[1,1,0]],  // -Z  normal=(0,0,-1)
 ];
 
-const FACE_NORMALS: [[f32; 3]; 6] = [
+pub(crate) const FACE_NORMALS: [[f32; 3]; 6] = [
     [1.0,  0.0,  0.0],
     [-1.0, 0.0,  0.0],
     [0.0,  1.0,  0.0],
@@ -107,8 +119,9 @@ fn push_quad_indices(indices: &mut Vec<u32>, base: u32) {
 
 /// Retângulo alinhado aos eixos de uma face: `origin` = canto mínimo da célula, `ext` = tamanho
 /// (1 no eixo da normal). Preserva o enrolamento de `FACE_VERTICES`.
-fn push_quad(vs: &mut Vec<VoxelVertex>, is: &mut Vec<u32>, face: usize, origin: [f32; 3], ext: [f32; 3], color: [f32; 4]) {
+fn push_quad(vs: &mut Vec<VoxelVertex>, is: &mut Vec<u32>, face: usize, origin: [f32; 3], ext: [f32; 3], color: [f32; 4], layer: u32) {
     let base = vs.len() as u32;
+    let (ua, va) = plane_axes(face / 2);
     for v in &FACE_VERTICES[face] {
         vs.push(VoxelVertex {
             position: [
@@ -118,13 +131,15 @@ fn push_quad(vs: &mut Vec<VoxelVertex>, is: &mut Vec<u32>, face: usize, origin: 
             ],
             color,
             normal: FACE_NORMALS[face],
+            uv: [v[ua] as f32 * ext[ua], v[va] as f32 * ext[va]],
+            layer,
         });
     }
     push_quad_indices(is, base);
 }
 
 /// Eixos (u, v) do plano perpendicular ao eixo `s` da normal.
-fn plane_axes(s: usize) -> (usize, usize) {
+pub(crate) fn plane_axes(s: usize) -> (usize, usize) {
     match s {
         0 => (2, 1),
         1 => (0, 2),
@@ -278,7 +293,7 @@ impl ChunkMesh {
                     e[ua] = rw as f32;
                     e[va] = rh as f32;
                     push_quad(&mut self.vertices, &mut self.indices, face, o, e,
-                        ColorPalette::get_color(b, FACE_NORMALS[face]));
+                        ColorPalette::get_color(b, FACE_NORMALS[face]), layer_for_face(b, face));
                 });
             }
         }
@@ -346,7 +361,7 @@ impl ChunkMesh {
         greedy_rects(&mut mask, s, s, |u, v, rw, rh, (b, y)| {
             push_quad(&mut self.vertices, &mut self.indices, 2,
                 [ox + u as f32, y as f32, oz + v as f32], [rw as f32, 1.0, rh as f32],
-                ColorPalette::get_color(b, FACE_NORMALS[2]));
+                ColorPalette::get_color(b, FACE_NORMALS[2]), layer_for_face(b, 2));
         });
 
         // Saias laterais
@@ -380,7 +395,7 @@ impl ChunkMesh {
                         ([ox + slice as f32, y0 as f32, oz + u as f32], [1.0, h, rw as f32])
                     };
                     push_quad(&mut self.vertices, &mut self.indices, face, origin, ext,
-                        ColorPalette::get_color(b, FACE_NORMALS[face]));
+                        ColorPalette::get_color(b, FACE_NORMALS[face]), layer_for_face(b, face));
                 });
             }
         }
@@ -677,6 +692,101 @@ mod tests {
         for lod in [Lod::Full, Lod::Merged, Lod::Light] {
             let m = ChunkMesh::build_lod(&c, lod, &no_neighbors());
             assert!(m.vertices.is_empty() && m.water_vertices.is_empty());
+        }
+    }
+
+    // ---------- Parte 2: texturas e opacidade ----------
+
+    #[test]
+    fn vertex_layout_matches_the_struct() {
+        let a = VoxelVertex::ATTRIBS;
+        assert_eq!(a.len(), 5);
+        assert_eq!(a[4].offset as usize + 4, std::mem::size_of::<VoxelVertex>());
+        assert_eq!(a[3].offset, 40);
+    }
+
+    #[test]
+    fn textured_faces_use_the_block_and_face_kind_layer() {
+        use crate::world::textures::{layer_for, FaceKind};
+        let mut c = Chunk::new(ChunkPos::new(0, 0));
+        c.set(4, 10, 4, BlockType::Grass);
+        let m = ChunkMesh::build_lod(&c, Lod::Full, &no_neighbors());
+        let layer_of = |n: [f32; 3]| m.vertices.iter().find(|v| v.normal == n).unwrap().layer;
+        assert_eq!(layer_of([0.0, 1.0, 0.0]), layer_for(BlockType::Grass, FaceKind::Top));
+        assert_eq!(layer_of([0.0, -1.0, 0.0]), layer_for(BlockType::Grass, FaceKind::Bottom));
+        assert_eq!(layer_of([1.0, 0.0, 0.0]), layer_for(BlockType::Grass, FaceKind::Side));
+        assert_eq!(layer_of([0.0, 0.0, -1.0]), layer_for(BlockType::Grass, FaceKind::Side));
+        assert!(m.vertices.iter().all(|v| v.layer != NO_TEXTURE));
+    }
+
+    #[test]
+    fn merged_quads_repeat_the_tile_in_block_units() {
+        let m = ChunkMesh::build_lod(&slab(10, BlockType::Stone), Lod::Full, &no_neighbors());
+        // topo 32×32: uv vai de 0 a 32 (o tile repete a cada bloco)
+        let top = m.vertices.chunks(4).find(|q| q[0].normal == [0.0, 1.0, 0.0]).unwrap();
+        let (umax, vmax) = top.iter().fold((0f32, 0f32), |(u, v), p| (u.max(p.uv[0]), v.max(p.uv[1])));
+        assert_eq!((umax, vmax), (32.0, 32.0));
+        // lateral: 32 de largura × 11 de altura
+        let side = m.vertices.chunks(4).find(|q| q[0].normal == [1.0, 0.0, 0.0]).unwrap();
+        let (umax, vmax) = side.iter().fold((0f32, 0f32), |(u, v), p| (u.max(p.uv[0]), v.max(p.uv[1])));
+        assert_eq!((umax, vmax), (32.0, 11.0));
+        // uv e posição andam juntos: dois vértices iguais em X/Z no topo têm o mesmo uv
+        for q in m.vertices.chunks(4) {
+            assert!(q.iter().all(|v| v.uv[0] >= 0.0 && v.uv[1] >= 0.0));
+        }
+    }
+
+    #[test]
+    fn merged_lod_uses_the_simplified_block_texture() {
+        use crate::world::textures::{layer_for, FaceKind};
+        let mut c = slab(10, BlockType::Stone);
+        c.set(3, 11, 3, BlockType::Iron);
+        let full = ChunkMesh::build_lod(&c, Lod::Full, &no_neighbors());
+        let merged = ChunkMesh::build_lod(&c, Lod::Merged, &no_neighbors());
+        let iron = layer_for(BlockType::Iron, FaceKind::Side);
+        assert!(full.vertices.iter().any(|v| v.layer == iron));
+        assert!(!merged.vertices.iter().any(|v| v.layer == iron), "minério vira pedra de longe");
+    }
+
+    #[test]
+    fn light_lod_is_textured_too() {
+        // Todos os blocos têm textura 16×16, inclusive no anel distante (os mipmaps a suavizam).
+        let m = ChunkMesh::build_lod(&slab(10, BlockType::Stone), Lod::Light, &no_neighbors());
+        assert!(!m.vertices.is_empty());
+        assert!(m.vertices.iter().all(|v| v.layer != NO_TEXTURE && v.layer < 96));
+        let top = m.vertices.chunks(4).find(|q| q[0].normal == [0.0, 1.0, 0.0]).unwrap();
+        assert_eq!(top[0].layer, layer_for_face(BlockType::Stone, 2));
+        let umax = top.iter().map(|v| v.uv[0]).fold(0.0, f32::max);
+        assert_eq!(umax, 32.0, "o tile repete por bloco também no LOD distante");
+    }
+
+    #[test]
+    fn leaves_are_opaque_and_hide_faces_behind_them() {
+        // Antes as folhas eram translúcidas (alpha 0.85) e não ocultavam o que havia atrás.
+        let mut c = Chunk::new(ChunkPos::new(0, 0));
+        c.set(5, 10, 5, BlockType::Stone);
+        c.set(6, 10, 5, BlockType::Leaves);
+        let m = ChunkMesh::build_lod(&c, Lod::Full, &no_neighbors());
+        // A face +X da pedra encosta na folha: é oculta
+        assert!(!m.vertices.iter().any(|v| v.normal == [1.0, 0.0, 0.0] && v.position[0] == 6.0
+            && v.layer == layer_for_face(BlockType::Stone, 0)), "face da pedra atrás da folha não deve existir");
+        assert!(m.vertices.iter().all(|v| v.color[3] == 1.0), "nenhum vértice translúcido no terreno");
+        // Água continua sendo a única malha translúcida
+        let w = ChunkMesh::build_lod(&pool_chunk(), Lod::Full, &no_neighbors());
+        assert!(w.water_vertices.iter().all(|v| v.color[3] < 1.0));
+    }
+
+    #[test]
+    fn every_terrain_block_mesh_is_fully_opaque() {
+        for v in 1..32u8 {
+            let b = BlockType::from_u8(v);
+            if b == BlockType::Water { continue; }
+            let mut c = Chunk::new(ChunkPos::new(0, 0));
+            c.set(2, 5, 2, b);
+            for lod in [Lod::Full, Lod::Merged, Lod::Light] {
+                let m = ChunkMesh::build_lod(&c, lod, &no_neighbors());
+                assert!(m.vertices.iter().all(|x| x.color[3] == 1.0), "{b:?} {lod:?} tem alpha < 1");
+            }
         }
     }
 }

@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::inventory::Inventory;
 use crate::world::chunk::{Chunk, ChunkPos, CHUNK_VOLUME};
 use crate::world::BlockType;
 
 pub const MAGIC: &[u8; 4] = b"DNE1";
-pub const VERSION: u32 = 1;
+/// 2 = relógio do mundo + inventário no cabeçalho (v1 ainda é lido).
+pub const VERSION: u32 = 2;
 
 /// Blocos alterados por chunk: índice linear do bloco -> `BlockType as u8`.
 pub type ChunkEdits = HashMap<u32, u8>;
@@ -26,6 +28,22 @@ pub struct SaveHeader {
     pub pitch: f32,
     /// 0 = Survival, 1 = Creative, 2 = Spectator
     pub mode: u8,
+    /// Segundos de jogo (dia/noite, semanas e lua). Novo na v2.
+    pub clock_elapsed: f64,
+    /// Inventário do jogador. Novo na v2.
+    pub inventory: Inventory,
+}
+
+/// Cabeçalho da versão 1 (sem relógio nem inventário); mantido para ler saves antigos.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct SaveHeaderV1 {
+    version: u32,
+    name: String,
+    seed: u32,
+    player_pos: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+    mode: u8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -84,7 +102,26 @@ fn parse_header(cur: &mut &[u8]) -> std::io::Result<SaveHeader> {
     if &magic != MAGIC {
         return Err(io_err("arquivo .dne inválido"));
     }
-    let h: SaveHeader = bincode::deserialize_from(&mut *cur).map_err(io_err)?;
+    if cur.len() < 4 {
+        return Err(io_err("cabeçalho truncado"));
+    }
+    let version = u32::from_le_bytes([cur[0], cur[1], cur[2], cur[3]]);
+    let h: SaveHeader = if version >= 2 {
+        bincode::deserialize_from(&mut *cur).map_err(io_err)?
+    } else {
+        let v1: SaveHeaderV1 = bincode::deserialize_from(&mut *cur).map_err(io_err)?;
+        SaveHeader {
+            version: v1.version,
+            name: v1.name,
+            seed: v1.seed,
+            player_pos: v1.player_pos,
+            yaw: v1.yaw,
+            pitch: v1.pitch,
+            mode: v1.mode,
+            clock_elapsed: crate::sky::WorldClock::new().elapsed,
+            inventory: Inventory::new(),
+        }
+    };
     if h.version > VERSION {
         return Err(io_err("versão de save mais nova que o jogo"));
     }
@@ -155,6 +192,12 @@ mod tests {
                 yaw: 1.0,
                 pitch: -0.5,
                 mode: 2,
+                clock_elapsed: 12_345.5,
+                inventory: {
+                    let mut inv = Inventory::new();
+                    inv.add_item(crate::inventory::Item::Block(BlockType::Gold), 12);
+                    inv
+                },
             },
             edits,
         }
@@ -235,5 +278,51 @@ mod tests {
         let mut e = ChunkEdits::new();
         e.insert(u32::MAX, 3);
         apply_edits(&mut c, &e);
+    }
+
+    #[test]
+    fn v2_roundtrips_clock_and_inventory() {
+        let dir = tmpdir("v2");
+        let path = world_path(&dir, "mundo");
+        let ws = sample(7);
+        write_world(&path, &ws).unwrap();
+        let back = read_world(&path).unwrap();
+        assert_eq!(back.header.clock_elapsed, 12_345.5);
+        assert_eq!(back.header, ws.header);
+        assert_eq!(back.header.inventory.count_of(crate::inventory::Item::Block(BlockType::Gold)), 12);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_saves_still_load_with_defaults() {
+        let dir = tmpdir("v1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("antigo.dne");
+        let v1 = SaveHeaderV1 {
+            version: 1,
+            name: "Antigo".into(),
+            seed: 99,
+            player_pos: [1.0, 70.0, 2.0],
+            yaw: 0.5,
+            pitch: 0.1,
+            mode: 1,
+        };
+        let mut e = ChunkEdits::new();
+        e.insert(5, BlockType::Stone as u8);
+        let deltas = vec![Delta { x: 3, z: -1, blocks: e.iter().map(|(i, b)| (*i, *b)).collect() }];
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&v1).unwrap());
+        bytes.extend(bincode::serialize(&deltas).unwrap());
+        std::fs::write(&path, bytes).unwrap();
+
+        let ws = read_world(&path).unwrap();
+        assert_eq!(ws.header.name, "Antigo");
+        assert_eq!(ws.header.seed, 99);
+        assert_eq!(ws.header.mode, 1);
+        assert_eq!(ws.header.inventory, Inventory::new(), "inventário vazio");
+        assert!((ws.header.clock_elapsed - crate::sky::WorldClock::new().elapsed).abs() < 1e-9, "relógio padrão (manhã)");
+        assert_eq!(ws.edits[&ChunkPos::new(3, -1)][&5], BlockType::Stone as u8);
+        assert_eq!(read_header(&path).unwrap().name, "Antigo");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

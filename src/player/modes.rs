@@ -24,9 +24,9 @@ impl PlayerMode {
         matches!(self, PlayerMode::Spectator)
     }
 
-    /// Whether blocks can be broken freely (Creative: instantly).
+    /// Whether blocks can be broken (Survival e Creative; Spectator não interage).
     pub fn can_break_blocks(&self) -> bool {
-        matches!(self, PlayerMode::Creative)
+        matches!(self, PlayerMode::Creative | PlayerMode::Survival)
     }
 
     /// Whether the player can interact with the world at all.
@@ -54,7 +54,7 @@ mod tests {
         assert!(PlayerMode::Creative.can_fly() && !PlayerMode::Creative.noclip());
         assert!(PlayerMode::Spectator.noclip());
         assert!(PlayerMode::Creative.can_break_blocks());
-        assert!(!PlayerMode::Survival.can_break_blocks());
+        assert!(PlayerMode::Survival.can_break_blocks(), "Survival agora quebra blocos");
         assert!(!PlayerMode::Spectator.can_break_blocks());
         assert_eq!(PlayerMode::Survival.label(), "Survival");
     }

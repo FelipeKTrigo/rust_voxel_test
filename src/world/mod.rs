@@ -4,6 +4,7 @@ pub mod chunk_manager;
 pub mod gen;
 pub mod palette;
 pub mod save;
+pub mod textures;
 
 pub use block::BlockType;
 pub use chunk::{Chunk, ChunkPos, CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME};

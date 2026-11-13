@@ -1,5 +1,5 @@
 use super::big_button;
-use super::settings::{settings_panel, GraphicsSettings};
+use super::settings::{graphics_screen, GraphicsSettings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainMenuAction {
@@ -37,21 +37,8 @@ pub fn main_menu_screen(ctx: &egui::Context) -> Option<MainMenuAction> {
     action
 }
 
-/// Tela de configurações. Retorna true quando o usuário clica em "Voltar".
+/// Tela de configurações (gráficos), centralizada. Retorna true quando o usuário clica em "Voltar".
 /// (Mudanças são aplicadas direto em `settings`; o chamador decide quando salvar.)
 pub fn settings_screen(ctx: &egui::Context, settings: &mut GraphicsSettings) -> bool {
-    let mut back = false;
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space(30.0);
-            ui.heading("Configurações");
-            ui.add_space(20.0);
-            settings_panel(ui, settings);
-            ui.add_space(24.0);
-            if big_button(ui, "Voltar") {
-                back = true;
-            }
-        });
-    });
-    back
+    graphics_screen(ctx, settings, false).0
 }

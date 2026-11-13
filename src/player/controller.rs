@@ -9,6 +9,10 @@ use winit::keyboard::KeyCode;
 
 const DOUBLE_TAP_WINDOW: f32 = 0.3;
 const CREATIVE_FLY_MULT: f32 = 1.8;
+/// Ctrl: corrida no chão.
+pub const SPRINT_MULT: f32 = 1.6;
+/// Ctrl: velocidade de voo (Criativo e Espectador).
+pub const FLY_BOOST_MULT: f32 = 2.5;
 
 pub struct Player {
     /// Posição dos pés (centro da base da hitbox).
@@ -17,6 +21,8 @@ pub struct Player {
     pub on_ground: bool,
     pub mode: PlayerMode,
     pub flying: bool,
+    /// Correndo (Ctrl segurado e andando no chão).
+    pub sprinting: bool,
     space_was_down: bool,
     since_space_press: f32,
 }
@@ -29,6 +35,7 @@ impl Player {
             on_ground: false,
             mode: PlayerMode::default(),
             flying: false,
+            sprinting: false,
             space_was_down: false,
             since_space_press: f32::INFINITY,
         }
@@ -69,6 +76,7 @@ impl Player {
         let wish = wish.normalize_or_zero();
         let space = input.is_key_held(KeyCode::Space);
         let shift = input.is_key_held(KeyCode::ShiftLeft);
+        let ctrl = input.is_key_held(KeyCode::ControlLeft) || input.is_key_held(KeyCode::ControlRight);
 
         // Duplo toque de Space (Creative) alterna voo.
         self.since_space_press += dt;
@@ -85,8 +93,10 @@ impl Player {
         let mut speed = self.mode.speed();
         let vert = (space as i32 - shift as i32) as f32;
 
+        self.sprinting = false;
         if self.mode.noclip() {
             self.flying = true;
+            if ctrl { speed *= FLY_BOOST_MULT; }
             self.velocity = wish * speed + Vec3::Y * vert * speed;
             self.position += self.velocity * dt;
             self.on_ground = false;
@@ -97,8 +107,13 @@ impl Player {
         let mut new_vy;
         if self.flying {
             speed *= CREATIVE_FLY_MULT;
+            if ctrl { speed *= FLY_BOOST_MULT; }
             new_vy = vert * speed;
         } else {
+            if ctrl && wish != Vec3::ZERO {
+                speed *= SPRINT_MULT;
+                self.sprinting = true;
+            }
             new_vy = (old_vy - GRAVITY * dt).max(-TERMINAL_VELOCITY);
             if space && self.on_ground {
                 new_vy = JUMP_VELOCITY;
@@ -256,5 +271,68 @@ mod tests {
         let p = survival(Vec3::new(0.5, 64.0, 0.5));
         let h = p.target_block(Vec3::new(0.0, -1.0, 0.0), &w).unwrap();
         assert_eq!(h.block.y, 63);
+    }
+
+    fn run(mut p: Player, keys: &[KeyCode], secs: f32) -> Player {
+        let w = FakeWorld::flat();
+        let input = held(keys);
+        for _ in 0..(secs * 60.0) as usize { p.update(1.0 / 60.0, &input, 0.0, &w); }
+        p
+    }
+
+    #[test]
+    fn ctrl_makes_the_player_run() {
+        let walk = run(survival(Vec3::new(0.5, 64.0, 0.5)), &[KeyCode::KeyW], 1.0);
+        let sprint = run(survival(Vec3::new(0.5, 64.0, 0.5)), &[KeyCode::KeyW, KeyCode::ControlLeft], 1.0);
+        let (dw, ds) = ((walk.position.z - 0.5).abs(), (sprint.position.z - 0.5).abs());
+        assert!(sprint.sprinting && !walk.sprinting);
+        assert!((ds / dw - SPRINT_MULT).abs() < 0.05, "razão {}", ds / dw);
+    }
+
+    #[test]
+    fn right_ctrl_also_runs() {
+        let a = run(survival(Vec3::new(0.5, 64.0, 0.5)), &[KeyCode::KeyW, KeyCode::ControlLeft], 1.0);
+        let b = run(survival(Vec3::new(0.5, 64.0, 0.5)), &[KeyCode::KeyW, KeyCode::ControlRight], 1.0);
+        assert!(b.sprinting);
+        assert!((a.position.z - b.position.z).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ctrl_alone_does_not_sprint() {
+        let p = run(survival(Vec3::new(0.5, 64.0, 0.5)), &[KeyCode::ControlLeft], 0.5);
+        assert!(!p.sprinting);
+        assert!((p.position.z - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn ctrl_speeds_up_creative_flight() {
+        let mk = || {
+            let mut p = Player::new(Vec3::new(0.5, 90.0, 0.5));
+            p.set_mode(PlayerMode::Creative);
+            p.toggle_fly();
+            p
+        };
+        let slow = run(mk(), &[KeyCode::KeyW], 1.0);
+        let fast = run(mk(), &[KeyCode::KeyW, KeyCode::ControlLeft], 1.0);
+        assert!(slow.flying && fast.flying);
+        let ratio = (fast.position.z - 0.5).abs() / (slow.position.z - 0.5).abs();
+        assert!((ratio - FLY_BOOST_MULT).abs() < 0.05, "razão {ratio}");
+        // também sobe mais rápido
+        let up_slow = run(mk(), &[KeyCode::Space], 0.5);
+        let up_fast = run(mk(), &[KeyCode::Space, KeyCode::ControlLeft], 0.5);
+        assert!(up_fast.position.y - 90.0 > (up_slow.position.y - 90.0) * 2.0);
+    }
+
+    #[test]
+    fn ctrl_speeds_up_spectator_flight() {
+        let mk = || {
+            let mut p = Player::new(Vec3::new(0.5, 90.0, 0.5));
+            p.set_mode(PlayerMode::Spectator);
+            p
+        };
+        let slow = run(mk(), &[KeyCode::KeyW], 1.0);
+        let fast = run(mk(), &[KeyCode::KeyW, KeyCode::ControlLeft], 1.0);
+        let ratio = (fast.position.z - 0.5).abs() / (slow.position.z - 0.5).abs();
+        assert!((ratio - FLY_BOOST_MULT).abs() < 0.05, "razão {ratio}");
     }
 }

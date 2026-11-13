@@ -84,12 +84,39 @@ impl GraphicsSettings {
     }
 }
 
+/// Tela de gráficos, separada e centralizada (usada pelo menu principal e pelo menu de pausa).
+/// Retorna `true` quando o jogador clica em "Voltar". `dim` escurece o fundo (vindo da pausa).
+pub fn graphics_screen(ctx: &egui::Context, s: &mut GraphicsSettings, dim: bool) -> (bool, bool) {
+    let mut back = false;
+    let mut changed = false;
+    super::centered_panel(ctx, dim, 520.0, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new("Gráficos").size(34.0).strong().color(super::ACCENT));
+            ui.label(egui::RichText::new("Desempenho e qualidade visual").weak());
+        });
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(10.0);
+        changed = settings_panel(ui, s);
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(14.0);
+        ui.vertical_centered(|ui| {
+            if super::big_button(ui, "Voltar") {
+                back = true;
+            }
+        });
+    });
+    (back, changed)
+}
+
 /// Painel de configurações gráficas. Retorna true se algo mudou.
 pub fn settings_panel(ui: &mut egui::Ui, s: &mut GraphicsSettings) -> bool {
     let mut changed = false;
+    ui.spacing_mut().slider_width = 220.0;
     egui::Grid::new("graphics_settings_grid")
         .num_columns(2)
-        .spacing([16.0, 8.0])
+        .spacing([20.0, 12.0])
         .show(ui, |ui| {
             ui.label("Distância de renderização");
             changed |= ui

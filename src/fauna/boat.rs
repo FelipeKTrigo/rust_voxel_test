@@ -11,6 +11,8 @@ use crate::physics::BlockQuery;
 use crate::world::{BlockType, ChunkManager, ColorPalette};
 
 pub const BOAT_RADIUS_CHUNKS: i32 = 8;
+/// Chance de um chunk de oceano profundo ter um barco (era 10%; o mar estava cheio demais).
+pub const BOAT_CHANCE: f32 = 0.025;
 /// Altura da superfície d'água (topo do bloco de água) sem onda.
 pub const SURFACE_Y: f32 = SEA_LEVEL as f32 + 1.0 - 0.12;
 
@@ -89,7 +91,7 @@ pub fn build_mesh<'a>(boats: impl Iterator<Item = &'a Boat>, t: f32) -> (Vec<Vox
                         if c[2] == 1 { mx.z } else { mn.z },
                     );
                     let p = origin + rot * local;
-                    vs.push(VoxelVertex { position: p.to_array(), color: *color, normal: n.to_array() });
+                    vs.push(VoxelVertex::flat(p.to_array(), *color, n.to_array()));
                 }
                 is.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
             }
@@ -100,7 +102,7 @@ pub fn build_mesh<'a>(boats: impl Iterator<Item = &'a Boat>, t: f32) -> (Vec<Vox
 
 /// Posição determinística do barco do chunk, se o chunk for oceano profundo.
 pub fn spawn_boat(seed: u32, pos: ChunkPos, cm: &ChunkManager) -> Option<Boat> {
-    if unit(hash3(seed, pos, 201)) > 0.10 {
+    if unit(hash3(seed, pos, 201)) > BOAT_CHANCE {
         return None;
     }
     let s = CHUNK_SIZE as i32;
@@ -201,5 +203,20 @@ mod tests {
             let w = wave_height(i as f32 * 0.37, i as f32 * 0.91, i as f32 * 0.1);
             assert!(w.abs() <= 0.12 + 1e-6);
         }
+    }
+
+    #[test]
+    fn boats_are_rare() {
+        // O sorteio por chunk (antes da checagem de água profunda) fica em ~2,5%.
+        let n = 60;
+        let mut hits = 0;
+        for cx in 0..n {
+            for cz in 0..n {
+                if unit(hash3(42, ChunkPos::new(cx, cz), 201)) <= BOAT_CHANCE { hits += 1; }
+            }
+        }
+        let frac = hits as f32 / (n * n) as f32;
+        assert!(frac > 0.012 && frac < 0.04, "{frac}");
+        assert!(BOAT_CHANCE <= 0.03, "menos barcos que os 10% originais");
     }
 }

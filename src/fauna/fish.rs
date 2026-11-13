@@ -176,12 +176,25 @@ impl FishSystem {
     }
 
     /// Instâncias para desenho. Com `reduced` (partículas reduzidas) mostra metade dos peixes.
+    #[allow(dead_code)]
     pub fn instances(&self, time: f32, reduced: bool) -> Vec<FishInstance> {
+        self.instances_culled(time, reduced, &mut |_, _, _| true)
+    }
+
+    /// Como `instances`, mas só inclui peixes aprovados por `visible(chave, centro, raio)`
+    /// (entity culling: fora da vista, longe demais ou escondidos atrás de blocos).
+    pub fn instances_culled(
+        &self,
+        time: f32,
+        reduced: bool,
+        visible: &mut dyn FnMut(u64, Vec3, f32) -> bool,
+    ) -> Vec<FishInstance> {
         let mut out = Vec::new();
-        for school in self.schools.values() {
+        for (cpos, school) in &self.schools {
             for (i, f) in school.iter().enumerate() {
                 if reduced && i % 2 == 1 { continue; }
                 if out.len() >= MAX_FISH { return out; }
+                if !visible(crate::culling::entity_key(cpos.x, cpos.z, i as u32), f.pos, 0.5) { continue; }
                 let d = Vec3::new(f.vel.x, 0.0, f.vel.z).normalize_or_zero();
                 out.push(FishInstance {
                     pos_size: [f.pos.x, f.pos.y, f.pos.z, 0.9],

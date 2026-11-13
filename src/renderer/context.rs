@@ -55,7 +55,9 @@ impl RenderContext {
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // COPY_SRC (quando suportado) permite capturar quadros para diagnóstico (DNE_SHOT).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | (surface_caps.usages & wgpu::TextureUsages::COPY_SRC),
             format: surface_format,
             width,
             height,

@@ -6,7 +6,7 @@ use glam::{IVec3, Vec3};
 use crate::camera::Camera;
 use crate::physics::BlockQuery;
 use crate::renderer::mesh::VoxelVertex;
-use crate::world::{BlockType, ColorPalette};
+use crate::world::BlockType;
 
 pub const MAX_PARTICLES: usize = 1500;
 pub const MAX_PARTICLES_REDUCED: usize = 300;
@@ -79,7 +79,9 @@ impl ParticleSystem {
             return;
         }
         let center = block_pos.as_vec3() + Vec3::splat(0.5);
-        let base = ColorPalette::get_color(block, [0.0, 1.0, 0.0]);
+        // Cor dos detritos = cor média da textura do bloco (minério quebrado solta lascas de pedra e veio)
+        let avg = crate::world::textures::average_color(block, crate::world::textures::FaceKind::Side);
+        let base = [avg[0], avg[1], avg[2], 1.0];
         let n = if reduced { 4 } else { 14 };
         for _ in 0..n {
             let shade = 0.75 + 0.35 * self.rand();
@@ -149,7 +151,8 @@ impl ParticleSystem {
     }
 
     /// Quads voltados para a câmera. A fumaça desvanece com a idade.
-    pub fn build_mesh(&self, camera: &Camera) -> (Vec<VoxelVertex>, Vec<u32>) {
+    /// `visible(centro, raio)` aplica o entity culling (partículas só usam distância + frustum).
+    pub fn build_mesh(&self, camera: &Camera, visible: &mut dyn FnMut(Vec3, f32) -> bool) -> (Vec<VoxelVertex>, Vec<u32>) {
         let forward = camera.forward();
         let right = camera.right();
         let up = right.cross(forward);
@@ -157,6 +160,9 @@ impl ParticleSystem {
         let mut vs = Vec::with_capacity(self.list.len() * 4);
         let mut is = Vec::with_capacity(self.list.len() * 6);
         for p in &self.list {
+            if !visible(p.pos, p.size) {
+                continue;
+            }
             let mut color = p.color;
             if p.kind == Kind::Smoke {
                 color[3] *= (1.0 - p.age / p.life).clamp(0.0, 1.0);
@@ -165,7 +171,7 @@ impl ParticleSystem {
             let u = up * (p.size * 0.5);
             let base = vs.len() as u32;
             for c in [p.pos - r - u, p.pos + r - u, p.pos + r + u, p.pos - r + u] {
-                vs.push(VoxelVertex { position: c.to_array(), color, normal });
+                vs.push(VoxelVertex::flat(c.to_array(), color, normal));
             }
             is.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
@@ -254,7 +260,7 @@ mod tests {
         ps.spawn_break(IVec3::new(0, 14, 0), BlockType::Dirt, false);
         ps.update(0.1, &Floor, false);
         let before: Vec<_> = ps.list.iter().map(|p| (p.pos, p.age)).collect();
-        let _ = ps.build_mesh(&Camera::new(Vec3::ZERO, 1.0));
+        let _ = ps.build_mesh(&Camera::new(Vec3::ZERO, 1.0), &mut |_, _| true);
         let after: Vec<_> = ps.list.iter().map(|p| (p.pos, p.age)).collect();
         assert_eq!(before, after);
     }
@@ -266,7 +272,7 @@ mod tests {
         let mut cam = Camera::new(Vec3::ZERO, 1.0);
         cam.yaw = 0.7;
         cam.pitch = 0.3;
-        let (vs, is) = ps.build_mesh(&cam);
+        let (vs, is) = ps.build_mesh(&cam, &mut |_, _| true);
         assert_eq!(vs.len(), ps.list.len() * 4);
         assert_eq!(is.len(), ps.list.len() * 6);
         let to_cam = -cam.forward();
@@ -276,5 +282,17 @@ mod tests {
             assert!(n.dot(to_cam) > 0.99, "enrolamento CCW voltado ao observador (backface culling)");
             assert!(Vec3::from(q[0].normal).dot(to_cam) > 0.99);
         }
+    }
+
+    #[test]
+    fn culled_particles_are_skipped() {
+        let mut ps = ParticleSystem::new();
+        ps.spawn_break(IVec3::new(0, 14, -10), BlockType::Dirt, false);
+        let cam = Camera::new(Vec3::ZERO, 1.0);
+        let (vs, _) = ps.build_mesh(&cam, &mut |_, _| false);
+        assert!(vs.is_empty());
+        let mut n = 0;
+        let (vs, _) = ps.build_mesh(&cam, &mut |_, _| { n += 1; n % 2 == 0 });
+        assert_eq!(vs.len(), (ps.list.len() / 2) * 4);
     }
 }

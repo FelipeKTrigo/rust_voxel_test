@@ -32,3 +32,5 @@ opt-level = 1          # compilação dev mais rápida mas com otimização bás
 opt-level   = 3
 lto         = true
 codegen-units = 1
+[dev-dependencies]
+naga = { version = "22.1", features = ["wgsl-in"] }

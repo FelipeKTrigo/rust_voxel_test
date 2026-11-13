@@ -24,9 +24,12 @@ pub struct WorldSelectState {
     pub confirm_delete: Option<usize>,
 }
 
-/// Lê metadados do mundo. Isolado: o formato real de save virá na Fase 7.
-fn read_world_meta(_path: &Path) -> u32 {
-    0
+/// Lê a seed do cabeçalho do `.dne` (0 se ilegível ou se for uma pasta).
+fn read_world_meta(path: &Path) -> u32 {
+    if path.is_dir() {
+        return 0;
+    }
+    crate::world::save::read_header(path).map(|h| h.seed).unwrap_or(0)
 }
 
 /// Lista mundos: subpastas ou arquivos `.dne`. Tolerante a erros.

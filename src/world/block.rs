@@ -37,6 +37,18 @@ pub enum BlockType {
 }
 
 impl BlockType {
+    /// Converte o byte de save de volta para o bloco (valor desconhecido = Air).
+    pub fn from_u8(v: u8) -> BlockType {
+        use BlockType::*;
+        const ALL: [BlockType; 32] = [
+            Air, Grass, Dirt, Stone, Sand, Water, Wood, Leaves, Snow, Gravel, Cobblestone, Bedrock,
+            Coal, Iron, Gold, Cactus, Feldspar, Pyrite, Bauxite, Moss, PineLeaves, PalmLeaves,
+            Coconut, Planks, FlowerRed, FlowerYellow, BerryBushRed, BerryBushBlue, SulfuricAcid,
+            DeadBush, CactusFruit, Roof,
+        ];
+        ALL.get(v as usize).copied().unwrap_or(Air)
+    }
+
     pub fn is_solid(&self) -> bool {
         !matches!(self, BlockType::Air | BlockType::Water | BlockType::SulfuricAcid | BlockType::FlowerRed | BlockType::FlowerYellow | BlockType::DeadBush)
     }
@@ -47,5 +59,18 @@ impl BlockType {
 
     pub fn is_air(&self) -> bool {
         matches!(self, BlockType::Air)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u8_roundtrip_all_blocks() {
+        for v in 0u8..32 {
+            assert_eq!(BlockType::from_u8(v) as u8, v);
+        }
+        assert_eq!(BlockType::from_u8(200), BlockType::Air);
     }
 }

@@ -1,5 +1,6 @@
 mod app;
 mod camera;
+mod fauna;
 mod input;
 mod physics;
 mod player;

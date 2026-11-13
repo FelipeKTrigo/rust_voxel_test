@@ -7,12 +7,42 @@ use crate::world::gen::gpu_gen::{GpuGen, cpu_columns};
 use crate::world::gen::types::{Biome, ColumnData, ColumnSampler, SEA_LEVEL};
 use crate::world::gen::{biome, features, tree};
 use crate::world::palette::ColorPalette;
+use crate::world::save::{apply_edits, WorldEdits};
 use crate::renderer::mesh::ChunkMesh;
 
-pub struct ChunkGpuData {
+pub struct MeshBuffers {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
+}
+
+impl MeshBuffers {
+    fn new(device: &wgpu::Device, vertices: &[u8], indices: &[u32]) -> Self {
+        Self {
+            vertex_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Chunk Vertex Buffer"),
+                contents: vertices,
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            index_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Chunk Index Buffer"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            index_count: indices.len() as u32,
+        }
+    }
+
+    fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
+    }
+}
+
+pub struct ChunkGpuData {
+    pub opaque: Option<MeshBuffers>,
+    pub water: Option<MeshBuffers>,
 }
 
 pub struct LoadedChunk {
@@ -29,6 +59,10 @@ pub struct ChunkManager {
     /// Máximo de chunks gerados por chamada de update_view (evita travadas).
     pub max_gen_per_update: usize,
     pool: Option<rayon::ThreadPool>,
+    /// Delta do jogador sobre o mundo procedural (persiste ao descarregar chunks).
+    edits: WorldEdits,
+    /// Houve alteração desde o último save.
+    pub unsaved: bool,
 }
 
 /// Amostrador de colunas em coordenadas de mundo sobre o cache.
@@ -61,7 +95,18 @@ impl ChunkManager {
             columns: HashMap::new(),
             max_gen_per_update: 16,
             pool: None,
+            edits: WorldEdits::new(),
+            unsaved: false,
         }
+    }
+
+    pub fn edits(&self) -> &WorldEdits {
+        &self.edits
+    }
+
+    pub fn set_edits(&mut self, edits: WorldEdits) {
+        self.edits = edits;
+        self.unsaved = false;
     }
 
     pub fn update_view(
@@ -115,6 +160,7 @@ impl ChunkManager {
         to_gen.truncate(self.max_gen_per_update);
         let seed = self.seed;
         let columns = &self.columns;
+        let edits = &self.edits;
         let built: Vec<Chunk> = {
             use rayon::prelude::*;
             let work = || to_gen.par_iter().map(|pos| {
@@ -124,6 +170,9 @@ impl ChunkManager {
                 features::carve_and_ores(&mut chunk, cols, seed);
                 features::react_pyrite_water(&mut chunk);
                 tree::decorate_chunk(&mut chunk, seed, &CacheSampler(columns));
+                if let Some(e) = edits.get(pos) {
+                    apply_edits(&mut chunk, e);
+                }
                 chunk.is_dirty = true;
                 chunk
             }).collect::<Vec<Chunk>>();
@@ -149,28 +198,15 @@ impl ChunkManager {
                 let mesh = ChunkMesh::build(&loaded.chunk, palette);
                 loaded.chunk.is_dirty = false;
 
-                if mesh.vertices.is_empty() {
-                    loaded.gpu_data = None;
-                    continue;
-                }
-
-                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Chunk Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&mesh.vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Chunk Index Buffer"),
-                    contents: bytemuck::cast_slice(&mesh.indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
-                loaded.gpu_data = Some(ChunkGpuData {
-                    vertex_buffer,
-                    index_buffer,
-                    index_count: mesh.indices.len() as u32,
-                });
+                let opaque = (!mesh.vertices.is_empty())
+                    .then(|| MeshBuffers::new(device, bytemuck::cast_slice(&mesh.vertices), &mesh.indices));
+                let water = (!mesh.water_vertices.is_empty())
+                    .then(|| MeshBuffers::new(device, bytemuck::cast_slice(&mesh.water_vertices), &mesh.water_indices));
+                loaded.gpu_data = if opaque.is_none() && water.is_none() {
+                    None
+                } else {
+                    Some(ChunkGpuData { opaque, water })
+                };
             }
         }
 
@@ -181,13 +217,30 @@ impl ChunkManager {
             && (p.z - player_chunk.z).abs() <= rd + MARGIN + 2);
     }
 
-    pub fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
+    /// Terreno opaco (e folhas).
+    pub fn render_opaque<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
         for loaded in self.chunks.values() {
-            if let Some(gpu) = &loaded.gpu_data {
-                render_pass.set_vertex_buffer(0, gpu.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..gpu.index_count, 0, 0..1);
+            if let Some(m) = loaded.gpu_data.as_ref().and_then(|g| g.opaque.as_ref()) {
+                m.draw(render_pass);
             }
+        }
+    }
+
+    /// Água translúcida, de trás para frente em relação à câmera.
+    pub fn render_water<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, camera: Vec3) {
+        let mut list: Vec<(f32, &MeshBuffers)> = self
+            .chunks
+            .iter()
+            .filter_map(|(pos, lc)| {
+                let m = lc.gpu_data.as_ref()?.water.as_ref()?;
+                let (ox, oz) = pos.world_origin();
+                let c = Vec3::new(ox + 16.0, camera.y, oz + 16.0);
+                Some((c.distance_squared(camera), m))
+            })
+            .collect();
+        list.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (_, m) in list {
+            m.draw(render_pass);
         }
     }
 
@@ -228,6 +281,11 @@ impl ChunkManager {
             Some(lc) => lc.chunk.set(lx as usize, wy as usize, lz as usize, block),
             None => return false,
         }
+        self.edits
+            .entry(ChunkPos::new(cx, cz))
+            .or_default()
+            .insert(crate::world::chunk::Chunk::block_index(lx as usize, wy as usize, lz as usize) as u32, block as u8);
+        self.unsaved = true;
         let mut touch = |dx: i32, dz: i32| {
             if let Some(n) = self.chunks.get_mut(&ChunkPos::new(cx + dx, cz + dz)) {
                 n.chunk.is_dirty = true;

@@ -12,7 +12,8 @@ use glam::Vec3;
 
 use crate::camera::Camera;
 use crate::input::InputState;
-use crate::renderer::{RenderContext, VoxelPipeline};
+use crate::renderer::{DynMesh, FishPipeline, RenderContext, VoxelPipeline};
+use crate::fauna::Fauna;
 use crate::world::{BlockType, ChunkManager, ColorPalette};
 use crate::physics::BlockQuery;
 use crate::player::{Player, PlayerMode};
@@ -22,6 +23,7 @@ use crate::ui::pause_menu::{pause_menu_screen, PauseAction, PauseState};
 use crate::ui::settings::GraphicsSettings;
 use crate::ui::world_select::{list_worlds, world_select_screen, WorldEntry, WorldSelectAction, WorldSelectState};
 use std::path::PathBuf;
+use crate::world::save::{self, SaveHeader, WorldSave};
 
 const SAVES_DIR: &str = "saves";
 const SETTINGS_PATH: &str = "settings.bin";
@@ -54,6 +56,7 @@ enum UiCmd {
     Resume,
     SetMode(PlayerMode),
     QuitToMenu,
+    SaveAndQuit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +72,12 @@ struct GameData {
     window: Arc<Window>,
     ctx: RenderContext,
     pipeline: VoxelPipeline,
+    fish_pipeline: FishPipeline,
+    boat_mesh: DynMesh,
+    fauna: Fauna,
+    /// Tempo de jogo (só avança em InGame; congela na pausa).
+    time: f32,
+    underwater: bool,
     camera: Camera,
     input: InputState,
     chunk_manager: Option<ChunkManager>,
@@ -81,6 +90,8 @@ struct GameData {
     pause_state: PauseState,
     break_requested: bool,
     current_world: Option<String>,
+    current_seed: u32,
+    autosave_timer: f32,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
@@ -146,8 +157,66 @@ impl App {
             }
         }
 
+        // Água, peixes e barcos (congelam na pausa, pois update só roda em InGame)
+        data.time += dt;
+        {
+            let eye = data.camera.position;
+            data.underwater = cm.block_at(eye.x.floor() as i32, eye.y.floor() as i32, eye.z.floor() as i32)
+                == BlockType::Water;
+            let reduced = data.settings.reduce_particles;
+            data.fauna.update(dt, data.time, data.player.position, &*cm, reduced);
+            let (bv, bi) = crate::fauna::boat::build_mesh(data.fauna.boats.boats.values(), data.time);
+            data.boat_mesh.update(&data.ctx.device, &bv, &bi);
+            let inst = data.fauna.fish.instances(data.time, reduced);
+            data.fish_pipeline.update(&data.ctx.queue, &inst);
+        }
+
+        if std::env::var_os("DNE_SMOKE").is_some() && (data.time % 2.0) < dt {
+            let water = cm.chunks.values().filter(|c| c.gpu_data.as_ref().map_or(false, |g| g.water.is_some())).count();
+            log::warn!("SMOKE t={:.1} fish={} boats={} water_chunks={} pos={:?} underwater={}",
+                data.time, data.fauna.fish.count(), data.fauna.boats.boats.len(), water, data.player.position, data.underwater);
+        }
+
+        let minutes = data.settings.auto_save_minutes;
+        data.autosave_timer += dt;
+        let due = minutes > 0 && data.autosave_timer >= minutes as f32 * 60.0;
         let player_pos = data.player.position;
         cm.update_view(player_pos, &data.palette, &data.ctx.device, &data.ctx.queue);
+
+        if due {
+            data.autosave_timer = 0.0;
+            // Salva sempre (posição do jogador também é estado), o arquivo é pequeno.
+            if let Err(e) = Self::save_world(data) {
+                log::warn!("Auto-save falhou: {e}");
+            }
+        }
+    }
+
+    /// Grava o mundo atual em `saves/<nome>.dne`.
+    fn save_world(data: &mut GameData) -> std::io::Result<()> {
+        let (Some(name), Some(cm)) = (data.current_world.clone(), data.chunk_manager.as_mut()) else {
+            return Ok(());
+        };
+        let mode = match data.player.mode {
+            PlayerMode::Survival => 0,
+            PlayerMode::Creative => 1,
+            PlayerMode::Spectator => 2,
+        };
+        let ws = WorldSave {
+            header: SaveHeader {
+                version: save::VERSION,
+                name: name.clone(),
+                seed: data.current_seed,
+                player_pos: data.player.position.to_array(),
+                yaw: data.camera.yaw,
+                pitch: data.camera.pitch,
+                mode,
+            },
+            edits: cm.edits().clone(),
+        };
+        save::write_world(&save::world_path(std::path::Path::new(SAVES_DIR), &name), &ws)?;
+        cm.unsaved = false;
+        Ok(())
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
@@ -156,7 +225,7 @@ impl App {
             None => return,
         };
 
-        data.pipeline.update_camera(&data.ctx.queue, &data.camera);
+        data.pipeline.update_camera(&data.ctx.queue, &data.camera, data.time, data.underwater);
 
         let surface_texture = match data.ctx.surface.get_current_texture() {
             Ok(t) => t,
@@ -181,6 +250,7 @@ impl App {
                 label: Some("3D Encoder"),
             });
 
+            let clear = if data.underwater { (0.01, 0.05, 0.12) } else { (0.53, 0.81, 0.98) };
             {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("3D Pass"),
@@ -189,7 +259,7 @@ impl App {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.53, g: 0.81, b: 0.98, a: 1.0,
+                                r: clear.0, g: clear.1, b: clear.2, a: 1.0,
                             }),
                             store: wgpu::StoreOp::Store,
                         },
@@ -209,7 +279,15 @@ impl App {
                     render_pass.set_pipeline(&data.pipeline.render_pipeline);
                     render_pass.set_bind_group(0, &data.pipeline.camera_bind_group, &[]);
                     if let Some(cm) = &data.chunk_manager {
-                        cm.render(&mut render_pass);
+                        cm.render_opaque(&mut render_pass);
+                    }
+                    // Ordem: terreno opaco -> barcos -> peixes (alpha-test) -> água translúcida
+                    data.boat_mesh.draw(&mut render_pass);
+                    data.fish_pipeline.draw(&mut render_pass, &data.pipeline.camera_bind_group);
+                    if let Some(cm) = &data.chunk_manager {
+                        render_pass.set_pipeline(&data.pipeline.water_pipeline);
+                        render_pass.set_bind_group(0, &data.pipeline.camera_bind_group, &[]);
+                        cm.render_water(&mut render_pass, data.camera.position);
                     }
                 }
             } // render_pass dropped
@@ -251,8 +329,8 @@ impl App {
                     match pause_menu_screen(ctx, cur_mode, &mut data.settings, &mut data.pause_state) {
                         Some(PauseAction::Resume) => cmd = Some(UiCmd::Resume),
                         Some(PauseAction::SetMode(m)) => cmd = Some(UiCmd::SetMode(mode_from_ui(m))),
-                        // Salvar em arquivo é a Fase 7; por ora ambos voltam ao menu.
-                        Some(PauseAction::SaveAndQuit) | Some(PauseAction::QuitWithoutSaving) => cmd = Some(UiCmd::QuitToMenu),
+                        Some(PauseAction::SaveAndQuit) => cmd = Some(UiCmd::SaveAndQuit),
+                        Some(PauseAction::QuitWithoutSaving) => cmd = Some(UiCmd::QuitToMenu),
                         None => {}
                     }
                 }
@@ -349,13 +427,24 @@ impl App {
             }
             UiCmd::Create { name, seed } => {
                 let _ = std::fs::create_dir_all(PathBuf::from(SAVES_DIR));
-                Self::start_world(data, name, seed);
+                Self::start_world(data, name, seed, None);
+                if let Err(e) = Self::save_world(data) {
+                    log::warn!("Falha ao criar arquivo do mundo: {e}");
+                }
                 self.state = GameState::InGame;
                 Self::set_cursor_captured(data.window.as_ref(), true);
             }
             UiCmd::Load(i) => {
                 if let Some(w) = data.worlds.get(i).cloned() {
-                    Self::start_world(data, w.name, w.seed);
+                    let loaded = match save::read_world(&w.path) {
+                        Ok(ws) => Some(ws),
+                        Err(e) => {
+                            log::warn!("Falha ao ler {:?}: {e}", w.path);
+                            None
+                        }
+                    };
+                    let seed = loaded.as_ref().map_or(w.seed, |l| l.header.seed);
+                    Self::start_world(data, w.name, seed, loaded);
                     self.state = GameState::InGame;
                     Self::set_cursor_captured(data.window.as_ref(), true);
                 }
@@ -366,30 +455,78 @@ impl App {
                 Self::set_cursor_captured(data.window.as_ref(), true);
             }
             UiCmd::SetMode(m) => data.player.set_mode(m),
+            UiCmd::SaveAndQuit => {
+                if let Err(e) = Self::save_world(data) {
+                    log::error!("Falha ao salvar: {e}");
+                }
+                let _ = data.settings.save(std::path::Path::new(SETTINGS_PATH));
+                data.chunk_manager = None;
+                data.fauna = Fauna::new();
+                data.underwater = false;
+                data.boat_mesh.update(&data.ctx.device, &[], &[]);
+                data.fish_pipeline.update(&data.ctx.queue, &[]);
+                data.current_world = None;
+                self.state = GameState::MainMenu;
+            }
             UiCmd::QuitToMenu => {
                 let _ = data.settings.save(std::path::Path::new(SETTINGS_PATH));
                 data.chunk_manager = None;
+                data.fauna = Fauna::new();
+                data.underwater = false;
+                data.boat_mesh.update(&data.ctx.device, &[], &[]);
+                data.fish_pipeline.update(&data.ctx.queue, &[]);
                 data.current_world = None;
                 self.state = GameState::MainMenu;
             }
         }
     }
 
-    /// Cria um novo ChunkManager para o mundo e posiciona o jogador na superfície.
-    fn start_world(data: &mut GameData, name: String, seed: u32) {
+    /// Cria o ChunkManager do mundo, aplica o save (se houver) e posiciona o jogador.
+    fn start_world(data: &mut GameData, name: String, seed: u32, saved: Option<WorldSave>) {
         let mut cm = ChunkManager::new(data.settings.render_distance, seed);
         cm.set_threads(data.settings.gen_threads);
         data.applied_threads = data.settings.gen_threads;
-        cm.max_gen_per_update = usize::MAX;
-        cm.update_view(Vec3::new(0.5, 80.0, 0.5), &data.palette, &data.ctx.device, &data.ctx.queue);
-        cm.max_gen_per_update = 16;
-        let ground = cm.surface_height(0, 0).unwrap_or(80);
+
         let mode = data.player.mode;
-        data.player = Player::new(Vec3::new(0.5, (ground.max(crate::world::gen::types::SEA_LEVEL) + 2) as f32, 0.5));
+        let (spawn_hint, saved_state) = match saved {
+            Some(ws) => {
+                cm.set_edits(ws.edits);
+                let h = ws.header;
+                (Vec3::from_array(h.player_pos), Some((h.yaw, h.pitch, h.mode)))
+            }
+            None => (Vec3::new(0.5, 80.0, 0.5), None),
+        };
+
+        // Gera ao redor do ponto salvo antes de posicionar o jogador (chunk ausente = sólido).
+        cm.max_gen_per_update = usize::MAX;
+        cm.update_view(spawn_hint, &data.palette, &data.ctx.device, &data.ctx.queue);
+        cm.max_gen_per_update = 16;
+
+        let pos = if saved_state.is_some() {
+            spawn_hint
+        } else {
+            let ground = cm.surface_height(0, 0).unwrap_or(80);
+            Vec3::new(0.5, (ground.max(crate::world::gen::types::SEA_LEVEL) + 2) as f32, 0.5)
+        };
+        data.player = Player::new(pos);
         data.player.set_mode(mode);
+        if let Some((yaw, pitch, m)) = saved_state {
+            data.camera.yaw = yaw;
+            data.camera.pitch = pitch;
+            data.player.set_mode(match m {
+                0 => PlayerMode::Survival,
+                2 => PlayerMode::Spectator,
+                _ => PlayerMode::Creative,
+            });
+        }
         data.camera.position = data.player.eye_position();
         data.chunk_manager = Some(cm);
         data.current_world = Some(name);
+        data.fauna = Fauna::new();
+        data.time = 0.0;
+        data.underwater = false;
+        data.current_seed = seed;
+        data.autosave_timer = 0.0;
     }
 }
 
@@ -411,6 +548,7 @@ impl ApplicationHandler for App {
             .expect("Failed to create render context");
 
         let pipeline = VoxelPipeline::new(&ctx);
+        let fish_pipeline = FishPipeline::new(&ctx, &pipeline);
 
         let aspect = ctx.config.width as f32 / ctx.config.height as f32;
         let camera = Camera::new(Vec3::new(0.0, 80.0, 0.0), aspect);
@@ -436,6 +574,7 @@ impl ApplicationHandler for App {
             false,
         );
 
+        let smoke = std::env::var_os("DNE_SMOKE").is_some();
         let palette = ColorPalette;
         let mut settings = GraphicsSettings::load_or_default(std::path::Path::new(SETTINGS_PATH));
         settings.clamp();
@@ -443,6 +582,11 @@ impl ApplicationHandler for App {
             window,
             ctx,
             pipeline,
+            fish_pipeline,
+            boat_mesh: DynMesh::default(),
+            fauna: Fauna::new(),
+            time: 0.0,
+            underwater: false,
             camera,
             input: InputState::new(),
             chunk_manager: None,
@@ -455,11 +599,25 @@ impl ApplicationHandler for App {
             pause_state: PauseState::default(),
             break_requested: false,
             current_world: None,
+            current_seed: 0,
+            autosave_timer: 0.0,
             egui_ctx,
             egui_state,
             egui_renderer,
             last_frame: Instant::now(),
         });
+        // Diagnóstico sem UI: DNE_SMOKE=<seed> entra direto num mundo temporário (não salva).
+        if smoke {
+            let seed = std::env::var("DNE_SMOKE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            if let Some(d) = &mut self.data {
+                Self::start_world(d, "__smoke".into(), seed, None);
+                d.current_world = None; // impede qualquer save
+                let sea = crate::world::gen::types::SEA_LEVEL as f32;
+                d.player = Player::new(Vec3::new(d.player.position.x, sea + 3.0, d.player.position.z));
+                d.player.set_mode(PlayerMode::Spectator);
+            }
+            self.state = GameState::InGame;
+        }
     }
 
     fn window_event(
@@ -477,6 +635,12 @@ impl ApplicationHandler for App {
 
         match &event {
             WindowEvent::CloseRequested => {
+                // Fechar a janela com um mundo aberto salva antes de sair.
+                if let Some(data) = &mut self.data {
+                    if let Err(e) = Self::save_world(data) {
+                        log::error!("Falha ao salvar ao fechar: {e}");
+                    }
+                }
                 event_loop.exit();
             }
 

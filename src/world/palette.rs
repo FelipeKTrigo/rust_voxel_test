@@ -76,3 +76,12 @@ impl ColorPalette {
         }
     }
 }
+
+/// Cores dos objetos que não são blocos (barcos, etc.).
+impl ColorPalette {
+    pub const BOAT_HULL: [f32; 4] = [0.45, 0.28, 0.14, 1.0];
+    pub const BOAT_DECK: [f32; 4] = [0.62, 0.45, 0.25, 1.0];
+    pub const BOAT_MAST: [f32; 4] = [0.35, 0.24, 0.13, 1.0];
+    pub const BOAT_SAIL: [f32; 4] = [0.92, 0.9, 0.82, 1.0];
+    pub const BOAT_NET: [f32; 4] = [0.70, 0.62, 0.40, 1.0];
+}

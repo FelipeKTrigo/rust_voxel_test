@@ -49,61 +49,64 @@ fn ore_at(n: &Noises, biome: Biome, wx: i32, y: i32, wz: i32) -> Option<BlockTyp
 
 /// Cava cavernas e ravinas e distribui minérios. Chamar depois de `populate_chunk`.
 pub fn carve_and_ores(chunk: &mut Chunk, cols: &ColumnData, seed: u32) {
+    use rayon::prelude::*;
     let n = Noises::new(seed);
     let ox = chunk.position.x * CHUNK_SIZE as i32;
     let oz = chunk.position.z * CHUNK_SIZE as i32;
 
-    for lz in 0..CHUNK_SIZE {
-        for lx in 0..CHUNK_SIZE {
-            let i = ColumnData::idx(lx, lz);
-            let wx = ox + lx as i32;
-            let wz = oz + lz as i32;
-            let h = (cols.heights[i] as i32).clamp(1, CHUNK_HEIGHT as i32 - 1);
-            let biome = Biome::from_u8(cols.biomes[i]);
-            let ocean = biome == Biome::Ocean;
+    // Layout do chunk: y é o índice mais rápido, então cada coluna (x, z) é uma fatia contígua
+    // de CHUNK_HEIGHT blocos, e colunas são independentes -> processadas em paralelo
+    // (saída idêntica à versão sequencial; reduz a latência quando poucos chunks chegam por vez).
+    chunk.blocks.par_chunks_mut(CHUNK_HEIGHT).enumerate().for_each(|(c, col)| {
+        let (lx, lz) = (c % CHUNK_SIZE, c / CHUNK_SIZE);
+        let i = ColumnData::idx(lx, lz);
+        let wx = ox + lx as i32;
+        let wz = oz + lz as i32;
+        let h = (cols.heights[i] as i32).clamp(1, CHUNK_HEIGHT as i32 - 1);
+        let biome = Biome::from_u8(cols.biomes[i]);
+        let ocean = biome == Biome::Ocean;
 
-            // Minérios (somente em pedra, antes de cavar)
-            for y in 1..h {
-                if chunk.get(lx, y as usize, lz) == BlockType::Stone {
-                    if let Some(o) = ore_at(&n, biome, wx, y, wz) {
-                        chunk.set(lx, y as usize, lz, o);
-                    }
-                }
-            }
-
-            // Ravina: faixa estreita ao redor do cruzamento por zero do noise
-            let (fx, fz) = (wx as f64, wz as f64);
-            let mut ravine_floor = i32::MAX;
-            if !ocean && biome != Biome::Beach {
-                let mask = n.ravine_mask.get([fx * 0.002, fz * 0.002]);
-                if mask > 0.1 {
-                    let r = n.ravine.get([fx * 0.006, fz * 0.006]).abs();
-                    let width = 0.010 * (((mask - 0.1) * 4.0).min(1.0));
-                    if r < width {
-                        let depth = 18.0 + 22.0 * (1.0 - r / width.max(1e-9));
-                        ravine_floor = (h - depth as i32).max(10);
-                    }
-                }
-            }
-
-            // Cavernas e ravinas
-            let top = if ocean { h - 3 } else { h };
-            for y in MIN_CARVE_Y..=top.min(CHUNK_HEIGHT as i32 - 1) {
-                let cur = chunk.get(lx, y as usize, lz);
-                if matches!(cur, BlockType::Air | BlockType::Water | BlockType::Bedrock) {
-                    continue;
-                }
-                let yy = y as f64;
-                let a = n.cave_a.get([fx * 0.018, yy * 0.03, fz * 0.018]);
-                let b = n.cave_b.get([fx * 0.018, yy * 0.03, fz * 0.018]);
-                let cave = a.abs() < 0.055 && b.abs() < 0.055;
-                let ravine = !ocean && y >= ravine_floor;
-                if cave || ravine {
-                    chunk.set(lx, y as usize, lz, BlockType::Air);
+        // Minérios (somente em pedra, antes de cavar)
+        for y in 1..h {
+            if col[y as usize] == BlockType::Stone {
+                if let Some(o) = ore_at(&n, biome, wx, y, wz) {
+                    col[y as usize] = o;
                 }
             }
         }
-    }
+
+        // Ravina: faixa estreita ao redor do cruzamento por zero do noise
+        let (fx, fz) = (wx as f64, wz as f64);
+        let mut ravine_floor = i32::MAX;
+        if !ocean && biome != Biome::Beach {
+            let mask = n.ravine_mask.get([fx * 0.002, fz * 0.002]);
+            if mask > 0.1 {
+                let r = n.ravine.get([fx * 0.006, fz * 0.006]).abs();
+                let width = 0.010 * (((mask - 0.1) * 4.0).min(1.0));
+                if r < width {
+                    let depth = 18.0 + 22.0 * (1.0 - r / width.max(1e-9));
+                    ravine_floor = (h - depth as i32).max(10);
+                }
+            }
+        }
+
+        // Cavernas e ravinas
+        let top = if ocean { h - 3 } else { h };
+        for y in MIN_CARVE_Y..=top.min(CHUNK_HEIGHT as i32 - 1) {
+            let cur = col[y as usize];
+            if matches!(cur, BlockType::Air | BlockType::Water | BlockType::Bedrock) {
+                continue;
+            }
+            let yy = y as f64;
+            // `b` só é avaliado onde `a` já passou (curto-circuito: mesma saída, menos ruído).
+            let p3 = [fx * 0.018, yy * 0.03, fz * 0.018];
+            let cave = n.cave_a.get(p3).abs() < 0.055 && n.cave_b.get(p3).abs() < 0.055;
+            let ravine = !ocean && y >= ravine_floor;
+            if cave || ravine {
+                col[y as usize] = BlockType::Air;
+            }
+        }
+    });
 }
 
 /// Pirita adjacente (6 vizinhos, dentro do chunk) a água transforma a água em ácido sulfúrico.

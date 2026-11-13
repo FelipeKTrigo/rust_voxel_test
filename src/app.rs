@@ -14,6 +14,7 @@ use crate::camera::Camera;
 use crate::input::InputState;
 use crate::renderer::{DynMesh, FishPipeline, RenderContext, VoxelPipeline};
 use crate::fauna::Fauna;
+use crate::particles::ParticleSystem;
 use crate::world::{BlockType, ChunkManager, ColorPalette};
 use crate::physics::BlockQuery;
 use crate::player::{Player, PlayerMode};
@@ -74,6 +75,8 @@ struct GameData {
     pipeline: VoxelPipeline,
     fish_pipeline: FishPipeline,
     boat_mesh: DynMesh,
+    particles: ParticleSystem,
+    particle_mesh: DynMesh,
     fauna: Fauna,
     /// Tempo de jogo (só avança em InGame; congela na pausa).
     time: f32,
@@ -143,7 +146,13 @@ impl App {
             cm.set_threads(data.settings.gen_threads);
             data.applied_threads = data.settings.gen_threads;
         }
-        cm.max_gen_per_update = 4 + (data.settings.cpu_gpu_balance.clamp(0.0, 1.0) * 28.0) as usize;
+        cm.lod_level = data.settings.lod_level;
+        // Balanço CPU/GPU: fatia do orçamento por frame dedicada ao trabalho de CPU
+        // (geração de blocos e construção de malhas, ambos paralelos no pool).
+        let bal = data.settings.cpu_gpu_balance.clamp(0.0, 1.0);
+        cm.max_gen_per_update = 4 + (bal * 28.0) as usize;
+        cm.max_mesh_per_update = 4 + (bal * 20.0) as usize;
+        data.camera.set_far_for_render_distance(data.settings.render_distance);
 
         data.player.update(dt, &data.input, data.camera.yaw, &*cm);
         data.camera.position = data.player.eye_position();
@@ -151,8 +160,10 @@ impl App {
         // Quebrar bloco (clique esquerdo)
         if std::mem::take(&mut data.break_requested) && data.player.mode.can_break_blocks() {
             if let Some(hit) = data.player.target_block(data.camera.forward(), &*cm) {
-                if cm.block_at(hit.block.x, hit.block.y, hit.block.z) != BlockType::Bedrock {
+                let broken = cm.block_at(hit.block.x, hit.block.y, hit.block.z);
+                if broken != BlockType::Bedrock {
                     cm.set_block_world(hit.block.x, hit.block.y, hit.block.z, BlockType::Air);
+                    data.particles.spawn_break(hit.block, broken, data.settings.reduce_particles);
                 }
             }
         }
@@ -167,6 +178,9 @@ impl App {
             data.fauna.update(dt, data.time, data.player.position, &*cm, reduced);
             let (bv, bi) = crate::fauna::boat::build_mesh(data.fauna.boats.boats.values(), data.time);
             data.boat_mesh.update(&data.ctx.device, &bv, &bi);
+            data.particles.update(dt, &*cm, reduced);
+            let (pv, pi) = data.particles.build_mesh(&data.camera);
+            data.particle_mesh.update(&data.ctx.device, &pv, &pi);
             let inst = data.fauna.fish.instances(data.time, reduced);
             data.fish_pipeline.update(&data.ctx.queue, &inst);
         }
@@ -243,6 +257,7 @@ impl App {
         };
 
         let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let frustum = data.camera.frustum();
 
         // --- 3D Render Pass ---
         {
@@ -279,15 +294,16 @@ impl App {
                     render_pass.set_pipeline(&data.pipeline.render_pipeline);
                     render_pass.set_bind_group(0, &data.pipeline.camera_bind_group, &[]);
                     if let Some(cm) = &data.chunk_manager {
-                        cm.render_opaque(&mut render_pass);
+                        cm.render_opaque(&mut render_pass, &frustum);
                     }
                     // Ordem: terreno opaco -> barcos -> peixes (alpha-test) -> água translúcida
                     data.boat_mesh.draw(&mut render_pass);
+                    data.particle_mesh.draw(&mut render_pass);
                     data.fish_pipeline.draw(&mut render_pass, &data.pipeline.camera_bind_group);
                     if let Some(cm) = &data.chunk_manager {
                         render_pass.set_pipeline(&data.pipeline.water_pipeline);
                         render_pass.set_bind_group(0, &data.pipeline.camera_bind_group, &[]);
-                        cm.render_water(&mut render_pass, data.camera.position);
+                        cm.render_water(&mut render_pass, data.camera.position, &frustum);
                     }
                 }
             } // render_pass dropped
@@ -464,6 +480,8 @@ impl App {
                 data.fauna = Fauna::new();
                 data.underwater = false;
                 data.boat_mesh.update(&data.ctx.device, &[], &[]);
+                data.particles.clear();
+                data.particle_mesh.update(&data.ctx.device, &[], &[]);
                 data.fish_pipeline.update(&data.ctx.queue, &[]);
                 data.current_world = None;
                 self.state = GameState::MainMenu;
@@ -474,6 +492,8 @@ impl App {
                 data.fauna = Fauna::new();
                 data.underwater = false;
                 data.boat_mesh.update(&data.ctx.device, &[], &[]);
+                data.particles.clear();
+                data.particle_mesh.update(&data.ctx.device, &[], &[]);
                 data.fish_pipeline.update(&data.ctx.queue, &[]);
                 data.current_world = None;
                 self.state = GameState::MainMenu;
@@ -499,8 +519,11 @@ impl App {
 
         // Gera ao redor do ponto salvo antes de posicionar o jogador (chunk ausente = sólido).
         cm.max_gen_per_update = usize::MAX;
+        cm.max_mesh_per_update = usize::MAX;
+        cm.lod_level = data.settings.lod_level;
         cm.update_view(spawn_hint, &data.palette, &data.ctx.device, &data.ctx.queue);
         cm.max_gen_per_update = 16;
+        cm.max_mesh_per_update = 8;
 
         let pos = if saved_state.is_some() {
             spawn_hint
@@ -584,6 +607,8 @@ impl ApplicationHandler for App {
             pipeline,
             fish_pipeline,
             boat_mesh: DynMesh::default(),
+            particles: ParticleSystem::new(),
+            particle_mesh: DynMesh::default(),
             fauna: Fauna::new(),
             time: 0.0,
             underwater: false,

@@ -1,6 +1,7 @@
 pub mod context;
 pub mod dynmesh;
 pub mod fish;
+pub mod lod;
 pub mod mesh;
 pub mod pipeline;
 

@@ -2,6 +2,7 @@ mod app;
 mod camera;
 mod fauna;
 mod input;
+mod particles;
 mod physics;
 mod player;
 mod ui;

@@ -13,32 +13,54 @@ use glam::Vec3;
 use crate::camera::Camera;
 use crate::input::InputState;
 use crate::renderer::{RenderContext, VoxelPipeline};
-use crate::world::{ChunkManager, ColorPalette};
+use crate::world::{BlockType, ChunkManager, ColorPalette};
+use crate::physics::BlockQuery;
+use crate::player::{Player, PlayerMode};
+use crate::ui::{self, PlayerModeUi};
+use crate::ui::main_menu::{main_menu_screen, settings_screen, MainMenuAction};
+use crate::ui::pause_menu::{pause_menu_screen, PauseAction, PauseState};
+use crate::ui::settings::GraphicsSettings;
+use crate::ui::world_select::{list_worlds, world_select_screen, WorldEntry, WorldSelectAction, WorldSelectState};
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayerMode {
-    Survival,
-    Creative,
-    Spectator,
+const SAVES_DIR: &str = "saves";
+const SETTINGS_PATH: &str = "settings.bin";
+
+fn mode_to_ui(m: PlayerMode) -> PlayerModeUi {
+    match m {
+        PlayerMode::Survival => PlayerModeUi::Survival,
+        PlayerMode::Creative => PlayerModeUi::Creative,
+        PlayerMode::Spectator => PlayerModeUi::Spectator,
+    }
 }
 
-impl PlayerMode {
-    pub fn speed(&self) -> f32 {
-        match self {
-            PlayerMode::Survival => 5.0,
-            PlayerMode::Creative => 15.0,
-            PlayerMode::Spectator => 30.0,
-        }
+fn mode_from_ui(m: PlayerModeUi) -> PlayerMode {
+    match m {
+        PlayerModeUi::Survival => PlayerMode::Survival,
+        PlayerModeUi::Creative => PlayerMode::Creative,
+        PlayerModeUi::Spectator => PlayerMode::Spectator,
     }
+}
 
-    pub fn horizontal_only(&self) -> bool {
-        matches!(self, PlayerMode::Survival)
-    }
+/// Comandos produzidos pela UI e aplicados após o frame.
+enum UiCmd {
+    ToWorldSelect,
+    ToSettings,
+    ToMain,
+    Quit,
+    Create { name: String, seed: u32 },
+    Load(usize),
+    Delete(usize),
+    Resume,
+    SetMode(PlayerMode),
+    QuitToMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
     MainMenu,
+    WorldSelect,
+    Settings,
     InGame,
     Paused,
 }
@@ -49,9 +71,16 @@ struct GameData {
     pipeline: VoxelPipeline,
     camera: Camera,
     input: InputState,
-    chunk_manager: ChunkManager,
+    chunk_manager: Option<ChunkManager>,
     palette: ColorPalette,
-    player_mode: PlayerMode,
+    player: Player,
+    settings: GraphicsSettings,
+    applied_threads: usize,
+    worlds: Vec<WorldEntry>,
+    ws_state: WorldSelectState,
+    pause_state: PauseState,
+    break_requested: bool,
+    current_world: Option<String>,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
@@ -95,12 +124,30 @@ impl App {
         let (dx, dy) = data.input.take_mouse_delta();
         data.camera.rotate(dx, dy);
 
-        let speed = data.player_mode.speed();
-        let horizontal_only = data.player_mode.horizontal_only();
-        data.camera.update_movement(&data.input, dt, speed, horizontal_only);
+        let Some(cm) = data.chunk_manager.as_mut() else { return };
 
-        let player_pos = data.camera.position;
-        data.chunk_manager.update_view(player_pos, &data.palette, &data.ctx.device, &data.ctx.queue);
+        // Configurações em tempo real
+        cm.render_distance = data.settings.render_distance;
+        if data.applied_threads != data.settings.gen_threads {
+            cm.set_threads(data.settings.gen_threads);
+            data.applied_threads = data.settings.gen_threads;
+        }
+        cm.max_gen_per_update = 4 + (data.settings.cpu_gpu_balance.clamp(0.0, 1.0) * 28.0) as usize;
+
+        data.player.update(dt, &data.input, data.camera.yaw, &*cm);
+        data.camera.position = data.player.eye_position();
+
+        // Quebrar bloco (clique esquerdo)
+        if std::mem::take(&mut data.break_requested) && data.player.mode.can_break_blocks() {
+            if let Some(hit) = data.player.target_block(data.camera.forward(), &*cm) {
+                if cm.block_at(hit.block.x, hit.block.y, hit.block.z) != BlockType::Bedrock {
+                    cm.set_block_world(hit.block.x, hit.block.y, hit.block.z, BlockType::Air);
+                }
+            }
+        }
+
+        let player_pos = data.player.position;
+        cm.update_view(player_pos, &data.palette, &data.ctx.device, &data.ctx.queue);
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
@@ -161,7 +208,9 @@ impl App {
                 if self.state == GameState::InGame || self.state == GameState::Paused {
                     render_pass.set_pipeline(&data.pipeline.render_pipeline);
                     render_pass.set_bind_group(0, &data.pipeline.camera_bind_group, &[]);
-                    data.chunk_manager.render(&mut render_pass);
+                    if let Some(cm) = &data.chunk_manager {
+                        cm.render(&mut render_pass);
+                    }
                 }
             } // render_pass dropped
 
@@ -169,33 +218,53 @@ impl App {
         }
 
         // --- Egui Processing ---
-        let is_main_menu = self.state == GameState::MainMenu;
-        let is_paused = self.state == GameState::Paused;
-        let is_in_game = self.state == GameState::InGame;
-
-        let mut act_start_game = false;
-        let mut act_resume = false;
-        let mut act_exit = false;
-        let mut act_mode_survival = false;
-        let mut act_mode_creative = false;
-        let mut act_mode_spectator = false;
+        let state = self.state;
+        let mut cmd: Option<UiCmd> = None;
+        let mut settings_dirty = false;
 
         let raw_input = data.egui_state.take_egui_input(data.window.as_ref());
         let egui_ctx = data.egui_ctx.clone();
+        let cur_mode = mode_to_ui(data.player.mode);
 
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            Self::build_ui(
-                ctx,
-                is_main_menu,
-                is_paused,
-                is_in_game,
-                &mut act_start_game,
-                &mut act_resume,
-                &mut act_exit,
-                &mut act_mode_survival,
-                &mut act_mode_creative,
-                &mut act_mode_spectator,
-            );
+            match state {
+                GameState::MainMenu => match main_menu_screen(ctx) {
+                    Some(MainMenuAction::Play) => cmd = Some(UiCmd::ToWorldSelect),
+                    Some(MainMenuAction::Settings) => cmd = Some(UiCmd::ToSettings),
+                    Some(MainMenuAction::Quit) => cmd = Some(UiCmd::Quit),
+                    None => {}
+                },
+                GameState::Settings => {
+                    if settings_screen(ctx, &mut data.settings) {
+                        settings_dirty = true;
+                        cmd = Some(UiCmd::ToMain);
+                    }
+                }
+                GameState::WorldSelect => match world_select_screen(ctx, &mut data.ws_state, &data.worlds) {
+                    Some(WorldSelectAction::Create { name, seed }) => cmd = Some(UiCmd::Create { name, seed }),
+                    Some(WorldSelectAction::Load(i)) => cmd = Some(UiCmd::Load(i)),
+                    Some(WorldSelectAction::Delete(i)) => cmd = Some(UiCmd::Delete(i)),
+                    Some(WorldSelectAction::Back) => cmd = Some(UiCmd::ToMain),
+                    None => {}
+                },
+                GameState::Paused => {
+                    match pause_menu_screen(ctx, cur_mode, &mut data.settings, &mut data.pause_state) {
+                        Some(PauseAction::Resume) => cmd = Some(UiCmd::Resume),
+                        Some(PauseAction::SetMode(m)) => cmd = Some(UiCmd::SetMode(mode_from_ui(m))),
+                        // Salvar em arquivo é a Fase 7; por ora ambos voltam ao menu.
+                        Some(PauseAction::SaveAndQuit) | Some(PauseAction::QuitWithoutSaving) => cmd = Some(UiCmd::QuitToMenu),
+                        None => {}
+                    }
+                }
+                GameState::InGame => {
+                    // mira simples
+                    let c = ctx.screen_rect().center();
+                    let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("xhair")));
+                    let st = egui::Stroke::new(1.5, egui::Color32::WHITE);
+                    p.line_segment([c - egui::vec2(8.0, 0.0), c + egui::vec2(8.0, 0.0)], st);
+                    p.line_segment([c - egui::vec2(0.0, 8.0), c + egui::vec2(0.0, 8.0)], st);
+                }
+            }
         });
 
         data.egui_state.handle_platform_output(data.window.as_ref(), full_output.platform_output);
@@ -255,104 +324,72 @@ impl App {
 
         surface_texture.present();
 
-        // Apply UI actions after GPU submit
-        if act_start_game {
-            self.state = GameState::InGame;
-            if let Some(d) = &self.data {
-                Self::set_cursor_captured(d.window.as_ref(), true);
+        // Aplicar comandos da UI
+        if settings_dirty {
+            if let Some(d) = &mut self.data {
+                d.settings.clamp();
+                let _ = d.settings.save(std::path::Path::new(SETTINGS_PATH));
             }
         }
-        if act_resume {
-            self.state = GameState::InGame;
-            if let Some(d) = &self.data {
-                Self::set_cursor_captured(d.window.as_ref(), true);
+        let Some(cmd) = cmd else { return };
+        let Some(data) = &mut self.data else { return };
+        match cmd {
+            UiCmd::Quit => event_loop.exit(),
+            UiCmd::ToMain => self.state = GameState::MainMenu,
+            UiCmd::ToSettings => self.state = GameState::Settings,
+            UiCmd::ToWorldSelect => {
+                data.worlds = list_worlds(std::path::Path::new(SAVES_DIR));
+                self.state = GameState::WorldSelect;
             }
-        }
-        if act_exit {
-            event_loop.exit();
-        }
-        if let Some(data) = &mut self.data {
-            if act_mode_survival  { data.player_mode = PlayerMode::Survival; }
-            if act_mode_creative  { data.player_mode = PlayerMode::Creative; }
-            if act_mode_spectator { data.player_mode = PlayerMode::Spectator; }
+            UiCmd::Delete(i) => {
+                if let Some(w) = data.worlds.get(i) {
+                    let _ = if w.path.is_dir() { std::fs::remove_dir_all(&w.path) } else { std::fs::remove_file(&w.path) };
+                }
+                data.worlds = list_worlds(std::path::Path::new(SAVES_DIR));
+            }
+            UiCmd::Create { name, seed } => {
+                let _ = std::fs::create_dir_all(PathBuf::from(SAVES_DIR));
+                Self::start_world(data, name, seed);
+                self.state = GameState::InGame;
+                Self::set_cursor_captured(data.window.as_ref(), true);
+            }
+            UiCmd::Load(i) => {
+                if let Some(w) = data.worlds.get(i).cloned() {
+                    Self::start_world(data, w.name, w.seed);
+                    self.state = GameState::InGame;
+                    Self::set_cursor_captured(data.window.as_ref(), true);
+                }
+            }
+            UiCmd::Resume => {
+                let _ = data.settings.save(std::path::Path::new(SETTINGS_PATH));
+                self.state = GameState::InGame;
+                Self::set_cursor_captured(data.window.as_ref(), true);
+            }
+            UiCmd::SetMode(m) => data.player.set_mode(m),
+            UiCmd::QuitToMenu => {
+                let _ = data.settings.save(std::path::Path::new(SETTINGS_PATH));
+                data.chunk_manager = None;
+                data.current_world = None;
+                self.state = GameState::MainMenu;
+            }
         }
     }
 
-    fn build_ui(
-        ctx: &egui::Context,
-        is_main_menu: bool,
-        is_paused: bool,
-        _is_in_game: bool,
-        act_start_game: &mut bool,
-        act_resume: &mut bool,
-        act_exit: &mut bool,
-        act_mode_survival: &mut bool,
-        act_mode_creative: &mut bool,
-        act_mode_spectator: &mut bool,
-    ) {
-        if is_main_menu {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(egui::Color32::from_rgba_premultiplied(0, 0, 0, 200)))
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(120.0);
-                        ui.heading(
-                            egui::RichText::new("Dungeon n Evolve")
-                                .size(48.0)
-                                .color(egui::Color32::WHITE),
-                        );
-                        ui.add_space(40.0);
-
-                        let btn = egui::Vec2::new(200.0, 45.0);
-                        if ui.add_sized(btn, egui::Button::new("▶  Play")).clicked() {
-                            *act_start_game = true;
-                        }
-                        ui.add_space(10.0);
-                        if ui.add_sized(btn, egui::Button::new("✕  Exit")).clicked() {
-                            *act_exit = true;
-                        }
-                    });
-                });
-        }
-
-        if is_paused {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)))
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(100.0);
-                        ui.heading(
-                            egui::RichText::new("Paused")
-                                .size(36.0)
-                                .color(egui::Color32::WHITE),
-                        );
-                        ui.add_space(30.0);
-
-                        let btn = egui::Vec2::new(200.0, 40.0);
-                        if ui.add_sized(btn, egui::Button::new("Resume")).clicked() {
-                            *act_resume = true;
-                        }
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Mode").color(egui::Color32::LIGHT_GRAY));
-                        ui.add_space(4.0);
-                        if ui.add_sized(btn, egui::Button::new("Survival")).clicked() {
-                            *act_mode_survival = true;
-                        }
-                        ui.add_space(4.0);
-                        if ui.add_sized(btn, egui::Button::new("Creative")).clicked() {
-                            *act_mode_creative = true;
-                        }
-                        ui.add_space(4.0);
-                        if ui.add_sized(btn, egui::Button::new("Spectator")).clicked() {
-                            *act_mode_spectator = true;
-                        }
-                        ui.add_space(16.0);
-                        if ui.add_sized(btn, egui::Button::new("Quit to Menu")).clicked() {
-                            *act_exit = true;
-                        }
-                    });
-                });
-        }
+    /// Cria um novo ChunkManager para o mundo e posiciona o jogador na superfície.
+    fn start_world(data: &mut GameData, name: String, seed: u32) {
+        let mut cm = ChunkManager::new(data.settings.render_distance, seed);
+        cm.set_threads(data.settings.gen_threads);
+        data.applied_threads = data.settings.gen_threads;
+        cm.max_gen_per_update = usize::MAX;
+        cm.update_view(Vec3::new(0.5, 80.0, 0.5), &data.palette, &data.ctx.device, &data.ctx.queue);
+        cm.max_gen_per_update = 16;
+        let ground = cm.surface_height(0, 0).unwrap_or(80);
+        let mode = data.player.mode;
+        data.player = Player::new(Vec3::new(0.5, (ground.max(crate::world::gen::types::SEA_LEVEL) + 2) as f32, 0.5));
+        data.player.set_mode(mode);
+        data.camera.position = data.player.eye_position();
+        data.chunk_manager = Some(cm);
+        data.current_world = Some(name);
     }
 }
 
@@ -399,21 +436,25 @@ impl ApplicationHandler for App {
             false,
         );
 
-        let mut chunk_manager = ChunkManager::new(5, 42);
         let palette = ColorPalette;
-        chunk_manager.max_gen_per_update = usize::MAX;
-        chunk_manager.update_view(camera.position, &palette, &ctx.device, &ctx.queue);
-        chunk_manager.max_gen_per_update = 16;
-
+        let mut settings = GraphicsSettings::load_or_default(std::path::Path::new(SETTINGS_PATH));
+        settings.clamp();
         self.data = Some(GameData {
             window,
             ctx,
             pipeline,
             camera,
             input: InputState::new(),
-            chunk_manager,
+            chunk_manager: None,
             palette,
-            player_mode: PlayerMode::Creative,
+            player: Player::new(Vec3::new(0.5, 80.0, 0.5)),
+            applied_threads: 0,
+            settings,
+            worlds: Vec::new(),
+            ws_state: WorldSelectState::default(),
+            pause_state: PauseState::default(),
+            break_requested: false,
+            current_world: None,
             egui_ctx,
             egui_state,
             egui_renderer,
@@ -472,6 +513,14 @@ impl ApplicationHandler for App {
                                 _ => {}
                             }
                         }
+                    }
+                }
+            }
+
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Left, .. } => {
+                if self.state == GameState::InGame && !consumed {
+                    if let Some(data) = &mut self.data {
+                        data.break_requested = true;
                     }
                 }
             }

@@ -1,6 +1,9 @@
 mod app;
 mod camera;
 mod input;
+mod physics;
+mod player;
+mod ui;
 mod renderer;
 mod world;
 

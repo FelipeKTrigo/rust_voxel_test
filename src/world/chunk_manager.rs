@@ -28,6 +28,7 @@ pub struct ChunkManager {
     columns: HashMap<ChunkPos, ColumnData>,
     /// Máximo de chunks gerados por chamada de update_view (evita travadas).
     pub max_gen_per_update: usize,
+    pool: Option<rayon::ThreadPool>,
 }
 
 /// Amostrador de colunas em coordenadas de mundo sobre o cache.
@@ -59,6 +60,7 @@ impl ChunkManager {
             gpu: None,
             columns: HashMap::new(),
             max_gen_per_update: 16,
+            pool: None,
         }
     }
 
@@ -115,7 +117,7 @@ impl ChunkManager {
         let columns = &self.columns;
         let built: Vec<Chunk> = {
             use rayon::prelude::*;
-            to_gen.par_iter().map(|pos| {
+            let work = || to_gen.par_iter().map(|pos| {
                 let cols = &columns[pos];
                 let mut chunk = Chunk::new(*pos);
                 biome::populate_chunk(&mut chunk, cols, seed);
@@ -124,7 +126,11 @@ impl ChunkManager {
                 tree::decorate_chunk(&mut chunk, seed, &CacheSampler(columns));
                 chunk.is_dirty = true;
                 chunk
-            }).collect()
+            }).collect::<Vec<Chunk>>();
+            match &self.pool {
+                Some(pool) => pool.install(work),
+                None => work(),
+            }
         };
         for chunk in built {
             self.chunks.insert(chunk.position, LoadedChunk { chunk, gpu_data: None });
@@ -193,5 +199,56 @@ impl ChunkManager {
         let ly = y as i32;
         let lz = (z - oz) as i32;
         loaded.chunk.get_safe(lx, ly, lz)
+    }
+}
+
+impl ChunkManager {
+    /// Define o número de threads de CPU usadas na geração de chunks.
+    pub fn set_threads(&mut self, n: usize) {
+        self.pool = rayon::ThreadPoolBuilder::new().num_threads(n.max(1)).build().ok();
+    }
+
+    /// Altura (Y do topo sólido) da coluna em coordenadas de mundo, se o chunk estiver carregado.
+    pub fn surface_height(&self, wx: i32, wz: i32) -> Option<i32> {
+        let s = CHUNK_SIZE as i32;
+        let lc = self.chunks.get(&ChunkPos::new(wx.div_euclid(s), wz.div_euclid(s)))?;
+        let (lx, lz) = (wx.rem_euclid(s) as usize, wz.rem_euclid(s) as usize);
+        (0..crate::world::chunk::CHUNK_HEIGHT).rev()
+            .find(|&y| lc.chunk.get(lx, y, lz).is_solid())
+            .map(|y| y as i32)
+    }
+
+    /// Altera um bloco em coordenadas de mundo; marca chunk (e vizinho de borda) para remesh.
+    pub fn set_block_world(&mut self, wx: i32, wy: i32, wz: i32, block: BlockType) -> bool {
+        if wy < 0 || wy >= crate::world::chunk::CHUNK_HEIGHT as i32 { return false; }
+        let s = CHUNK_SIZE as i32;
+        let (cx, cz) = (wx.div_euclid(s), wz.div_euclid(s));
+        let (lx, lz) = (wx.rem_euclid(s), wz.rem_euclid(s));
+        match self.chunks.get_mut(&ChunkPos::new(cx, cz)) {
+            Some(lc) => lc.chunk.set(lx as usize, wy as usize, lz as usize, block),
+            None => return false,
+        }
+        let mut touch = |dx: i32, dz: i32| {
+            if let Some(n) = self.chunks.get_mut(&ChunkPos::new(cx + dx, cz + dz)) {
+                n.chunk.is_dirty = true;
+            }
+        };
+        if lx == 0 { touch(-1, 0); }
+        if lx == s - 1 { touch(1, 0); }
+        if lz == 0 { touch(0, -1); }
+        if lz == s - 1 { touch(0, 1); }
+        true
+    }
+}
+
+impl crate::physics::BlockQuery for ChunkManager {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> BlockType {
+        if y < 0 { return BlockType::Bedrock; }
+        if y >= crate::world::chunk::CHUNK_HEIGHT as i32 { return BlockType::Air; }
+        let s = CHUNK_SIZE as i32;
+        match self.chunks.get(&ChunkPos::new(x.div_euclid(s), z.div_euclid(s))) {
+            Some(lc) => lc.chunk.get(x.rem_euclid(s) as usize, y as usize, z.rem_euclid(s) as usize),
+            None => BlockType::Bedrock, // chunk não carregado = sólido
+        }
     }
 }
